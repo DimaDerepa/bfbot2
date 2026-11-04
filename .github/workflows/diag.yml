@@ -1,0 +1,85 @@
+name: diag
+
+# Fetches every store once and saves the raw pages + a parse report to the `diag` branch.
+# Run it from the Actions tab (Run workflow), or push a commit to the `diag-request` branch
+# containing diag-request.txt (one query per line; an optional line "stores: a,b,c").
+on:
+  workflow_dispatch:
+    inputs:
+      query:
+        description: "Search query (several: separate with ;)"
+        default: "iphone 16 pro;rtx 5070;aspirator dyson"
+        required: false
+      stores:
+        description: "Store keys, comma separated, or all"
+        default: "all"
+        required: false
+  push:
+    branches: [diag-request]
+
+permissions:
+  contents: write
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: pip install -r requirements-dev.txt
+
+      - name: Unit tests
+        continue-on-error: true
+        run: python -m pytest -q 2>&1 | tee pytest.txt
+
+      - name: Diagnostics
+        env:
+          IN_QUERY: ${{ github.event.inputs.query }}
+          IN_STORES: ${{ github.event.inputs.stores }}
+          BOT_PROXY: ${{ secrets.BOT_PROXY }}
+          BOT_PROXY_STORES: ${{ vars.BOT_PROXY_STORES }}
+        run: |
+          mkdir -p diag-out
+          stores="${IN_STORES:-all}"
+          if [ -f diag-request.txt ]; then
+            s_line="$(grep -i '^stores:' diag-request.txt | head -1 | cut -d: -f2- | tr -d ' ' || true)"
+            [ -n "$s_line" ] && stores="$s_line"
+            grep -vi '^stores:' diag-request.txt | sed '/^\s*$/d' > queries.txt
+          else
+            echo "${IN_QUERY:-iphone 16 pro}" | tr ';' '\n' | sed 's/^ *//;s/ *$//;/^$/d' > queries.txt
+          fi
+          curl -s --max-time 10 https://ipinfo.io/json > diag-out/runner-ip.json || true
+          cp pytest.txt diag-out/ 2>/dev/null || true
+          i=0
+          while IFS= read -r q; do
+            i=$((i+1))
+            echo "::group::query $i: $q"
+            python -m bot diag --query "$q" --stores "$stores" --out "diag-out/q$i" || true
+            echo "$q" > "diag-out/q$i/query.txt"
+            echo "::endgroup::"
+          done < queries.txt
+          { for d in diag-out/q*/; do cat "$d/report.md"; echo; done; } > diag-out/SUMMARY.md
+          cat diag-out/SUMMARY.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish to diag branch
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cd diag-out
+          git init -q -b diag
+          git add -A
+          git -c user.name="price-bot" -c user.email="price-bot@users.noreply.github.com" commit -qm "diag $(date -u +%FT%TZ)"
+          git push -qf "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" diag:diag
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: diag
+          path: diag-out
+          retention-days: 7

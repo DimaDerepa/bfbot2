@@ -1,0 +1,47 @@
+name: watch
+
+# Every 10 minutes (GitHub may delay scheduled runs by a few minutes under load).
+on:
+  schedule:
+    - cron: "3-59/10 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: watch
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  check:
+    # Set the repository variable RUNNER=self-hosted to run on your own machine (Romanian home IP).
+    runs-on: ${{ vars.RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: pip install -r requirements.txt
+
+      - name: Load state
+        run: bash scripts/load_state.sh state.json
+
+      - name: Check prices
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          BOT_PROXY: ${{ secrets.BOT_PROXY }}
+          BOT_PROXY_STORES: ${{ vars.BOT_PROXY_STORES }}
+        run: python -m bot run --state state.json
+
+      - name: Save state
+        if: always()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash scripts/save_state.sh state.json

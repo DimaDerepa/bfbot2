@@ -1,0 +1,62 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  Что отслеживать. Пункты можно добавлять и здесь, и прямо из Telegram (/add).
+#  Цены — в леях (RON). Регистр и румынские диакритики (ă, ș, ț) не важны.
+# ─────────────────────────────────────────────────────────────────────────────
+watches:
+  # Примеры — уберите # в начале строк, чтобы включить, или добавляйте свои через Telegram.
+  #
+  # - name: iPhone 16 Pro 256GB
+  #   query: iphone 16 pro 256gb          # что искать в магазинах
+  #   exclude: [max, resigilat]           # слова, которых НЕ должно быть в названии
+  #   min_price: 3000                     # дешевле — скорее всего аксессуар
+  #   max_price: 4800                     # сообщать, когда цена ≤ этой
+  #
+  # - name: Видеокарта RTX 5070
+  #   query: rtx 5070
+  #   exclude: [ti, laptop]
+  #   max_price: 3200
+  #   stores: [pcgarage, emag, altex, evomag, cel, compari]   # только эти магазины
+  #
+  # - name: OLED-телевизор 55"
+  #   query: televizor oled
+  #   must_include: [oled, 55inch]        # вместо слов запроса: эти слова обязаны быть в названии
+  #   any_of: [lg, sony, samsung, philips]  # хотя бы одно из
+  #   max_price: 4500
+  #
+  # - name: Dyson со скидкой
+  #   query: aspirator dyson
+  #   min_discount: 25                    # скидка от 25% (от старой цены магазина или от нашей истории)
+  #   categories: [home, appliances]      # опрашивать только магазины этих категорий
+  #
+  # - name: Конкретный товар
+  #   urls:                               # отслеживать конкретные страницы товара в любом магазине
+  #     - https://www.emag.ro/ceva-produs/pd/DXXXXXXX/
+  #   max_price: 2000
+
+settings:
+  default_stores: all            # all или список ключей магазинов (список: команда /stores или python -m bot stores)
+  default_categories: null       # например [electronics, pc] — ограничить магазины по категориям по умолчанию
+  disabled_stores: []            # магазины, которые не опрашивать вообще
+  notify_drop_pct: 2             # повторно сообщать, если цена упала ещё на ≥2% после прошлого уведомления
+  first_run_digest: 8            # для нового пункта прислать N самых дешёвых подходящих предложений
+  max_alerts_per_watch: 12       # максимум предложений в одном сообщении
+  max_pages: 1                   # страниц результатов поиска на магазин
+  request_delay: 1.5             # пауза между запросами к одному сайту, сек
+  timeout: 25
+  workers: 8                     # сколько магазинов опрашивать параллельно
+  store_fail_alert_after: 6      # предупредить в Telegram, если магазин недоступен N проверок подряд
+  history_days: 45               # сколько хранить историю цен
+  interval_minutes: 10           # только для режима daemon (VPS / домашний сервер)
+  store_every: {}                # например {emag: 3} — опрашивать eMAG только каждую 3-ю проверку (экономия прокси)
+
+  # Свои магазины (любой сайт на популярной платформе). platform: shopify | woocommerce | vtex | magento2 | html
+  shops: []
+  #  - key: mystore
+  #    name: My Store
+  #    platform: woocommerce
+  #    base_url: https://www.mystore.ro
+  #    categories: [electronics]
+  #  - key: othershop
+  #    name: Other Shop
+  #    platform: html                      # универсальный разбор страницы поиска
+  #    search_url: https://www.othershop.ro/cautare?q={q}

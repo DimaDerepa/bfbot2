@@ -1,0 +1,11 @@
+# Запуск на своём сервере / домашнем ПК / Raspberry Pi (румынский домашний IP почти не блокируют):
+#   1) создайте файл .env рядом:  TELEGRAM_BOT_TOKEN=...   (и при желании TELEGRAM_CHAT_ID=...)
+#   2) docker compose up -d --build
+services:
+  bot:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./data:/data
+      - ./config.yaml:/app/config.yaml:ro
