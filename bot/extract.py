@@ -15,7 +15,7 @@ import json
 import logging
 import re
 from typing import Any, Iterable, Iterator, Optional
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import unquote, urldefrag, urljoin, urlsplit
 
 from bs4 import BeautifulSoup, Tag
 
@@ -119,12 +119,13 @@ def offer_from_ld_product(obj: dict, base_url: str, store: str) -> Optional[Offe
     if isinstance(image, dict):
         image = image.get("url")
     old = None
+    aggregate = "aggregateoffer" in _types(offers)     # "@type" may be a list: ["Offer"]
     hp = offers.get("highPrice")
-    if hp and offers.get("@type", "").lower() != "aggregateoffer":
+    if hp and not aggregate:
         old = parse_price(hp)
     sku = obj.get("sku") or obj.get("productID") or obj.get("mpn")
     shop_count = None
-    if str(offers.get("@type", "")).lower() == "aggregateoffer":
+    if aggregate:
         try:
             shop_count = int(offers.get("offerCount")) if offers.get("offerCount") else None
         except (TypeError, ValueError):
@@ -697,7 +698,7 @@ def heuristic_cards(soup: BeautifulSoup, base_url: str, store: str, min_cards: i
             continue
         price = cur[0]
         old_price = max(old) if old else (max(cur) if len(cur) > 1 and max(cur) > price * 1.02 else None)
-        url = urljoin(base_url, str(anchors[0]["href"]).strip())
+        url = urldefrag(urljoin(base_url, str(anchors[0]["href"]).strip()))[0]   # "/p/1#reviews" -> "/p/1"
         ctext = container.get_text(" ", strip=True).lower()
         stock: Optional[bool] = None
         if any(x in ctext for x in ("stoc epuizat", "indisponibil", "nu este in stoc", "nu este în stoc", "out of stock")):
@@ -821,16 +822,26 @@ def _ld_page_offer(obj: dict, url: str, store: str, page_urls: list[str]) -> Opt
     return None
 
 
+def _page_key(u: str, base: str) -> str:
+    """Loose identity of a page URL: no scheme, www./m., query, fragment, trailing slash or %-encoding."""
+    try:
+        p = urlsplit(urljoin(base, u.strip()))
+    except ValueError:
+        return u
+    host = p.netloc.lower().removeprefix("www.").removeprefix("m.")
+    return host + (unquote(p.path).rstrip("/").lower() or "/")
+
+
 def _page_keys(soup: BeautifulSoup, url: str, requested_url: Optional[str]) -> set[str]:
-    keys = {canonical_url(url)}
+    keys = {_page_key(url, url)}
     if requested_url:
-        keys.add(canonical_url(requested_url))
+        keys.add(_page_key(requested_url, url))
     link = soup.find("link", rel="canonical", href=True)
     if link:
-        keys.add(canonical_url(urljoin(url, link["href"])))
-    og = soup.find("meta", attrs={"property": "og:url"})
-    if og and og.get("content"):
-        keys.add(canonical_url(urljoin(url, og["content"])))
+        keys.add(_page_key(str(link["href"]), url))
+    og = _meta(soup, "og:url")
+    if og:
+        keys.add(_page_key(og, url))
     return keys
 
 
@@ -842,7 +853,7 @@ def _pick_page_offer(cands: list[tuple[Offer, list[str], list[str]]], keys: set[
     if not cands:
         return None, False
     for o, explicit, ids in cands:
-        if {canonical_url(urljoin(url, u)) for u in explicit + ids} & keys:
+        if {_page_key(u, url) for u in explicit + ids} & keys:
             return o, False
     if len(cands) == 1:
         return cands[0][0], False
