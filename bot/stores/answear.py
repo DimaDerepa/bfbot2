@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import os
 import re
-from typing import Any, Optional
+from typing import Optional
 from urllib.parse import urlencode, urlsplit
 
 from ..extract import extract_product_page, make_soup
@@ -30,11 +30,7 @@ from ._fashion import clean_url, dedupe, first, join_title, norm, num, raise_if_
 LUIGIS_SEARCH = "https://live.luigisbox.com/search"
 TRACKER_ENV = "ANSWEAR_LUIGISBOX_TRACKER_ID"
 _TRACKER_RE = re.compile(r"\b(\d{3,8}-\d{3,8})\b")
-_TRACKER_CTX_RE = re.compile(
-    r"(?:tracker[_-]?id|trackerId|TrackerId|luigis?box[^\"'<>]{0,80}?|Luigis[^\"'<>]{0,80}?)[\"']?\s*[:=,]?\s*[\"']"
-    r"(\d{3,8}-\d{3,8})[\"']",
-    re.I,
-)
+_TRACKER_CTX_RE = re.compile(r"""tracker[_-]?id["']?\s*[:=]\s*["'](\d{3,8}-\d{3,8})["']""", re.I)
 _LBX_RE = re.compile(r"""(https?:)?//scripts\.luigisbox\.(?:com|tech)/(LBX-\d+)\.js""", re.I)
 _ID_RE = re.compile(r"-(\d{4,})\.html$")
 
@@ -197,5 +193,3 @@ def _reset_tracker_cache() -> None:  # tests
     _TRACKER_CACHE.clear()
 
 
-__all__ = ["AnswearStore", "find_tracker_id", "answear_id", "_reset_tracker_cache"]
-Any  # re-exported typing name kept for annotations in callers
