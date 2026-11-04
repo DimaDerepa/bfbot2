@@ -82,6 +82,7 @@ class StoreRun:
 class Engine:
     store_budget = STORE_TIME_BUDGET
     fetch_budget = FETCH_TIME_BUDGET
+    _fetch_deadline: Optional[float] = None     # set by fetch_all for the duration of the fetch phase
 
     def __init__(self, cfg: Config, state: State, tg: Telegram, *, dry_run: bool = False) -> None:
         self.cfg = cfg

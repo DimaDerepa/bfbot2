@@ -82,7 +82,8 @@ def cycle_backoff(fails: int, interval: float) -> float:
     return float(max(60, min(interval, 60 * 2 ** max(0, fails - 1))))
 
 
-def cmd_daemon(args, *, sleep=time.sleep, max_loops: int | None = None) -> int:
+def cmd_daemon(args, *, sleep=None, max_loops: int | None = None) -> int:
+    sleep = sleep or time.sleep
     cfg = load_config(args.config)
     state = State.load(args.state)
     tg = Telegram.from_env()

@@ -102,11 +102,10 @@ class DecathlonStore(NextPager, Store):
         current = [el for el in prices if not is_old_el(el) and not any(is_old_el(p) for p in el.parents if p is not it)
                    and not any("strikethrough" in c or "crossed" in c for c in el.get("class") or [])]
         price_el, price = None, None
-        for el in current:
-            p = current_price(el)
-            if p:
-                price_el, price = el, p
-                break
+        cands = [(el, current_price(el)) for el in current]
+        cands = [(el, p) for el, p in cands if p]
+        if cands:  # an unmarked reference price next to the selling price is the higher one
+            price_el, price = min(cands, key=lambda x: x[1])
         if not price:
             price_el, price = pick_price(it, "[class*='price']")
         if not price:

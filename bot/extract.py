@@ -15,7 +15,7 @@ import json
 import logging
 import re
 from typing import Any, Iterable, Iterator, Optional
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
 
 from bs4 import BeautifulSoup, Tag
 
@@ -41,10 +41,11 @@ def iter_jsonld(soup: BeautifulSoup) -> Iterator[dict]:
         if not raw:
             continue
         try:
-            data = json.loads(raw)
+            # strict=False: raw TAB / CR / LF inside strings (descriptions pasted from a CMS) are accepted
+            data = json.loads(raw, strict=False)
         except ValueError:
-            try:  # some shops emit trailing commas / control chars
-                data = json.loads(re.sub(r",\s*([}\]])", r"\1", raw.replace("\n", " ")))
+            try:  # some shops emit trailing commas
+                data = json.loads(re.sub(r",\s*([}\]])", r"\1", raw), strict=False)
             except ValueError:
                 continue
         yield from _flatten_ld(data)
@@ -164,38 +165,131 @@ def offers_from_jsonld(soup: BeautifulSoup, base_url: str, store: str) -> list[O
 
 # --------------------------------------------------------------------------- microdata
 
-def offers_from_microdata(soup: BeautifulSoup, base_url: str, store: str) -> list[Offer]:
-    out: list[Offer] = []
-    for el in soup.find_all(attrs={"itemtype": re.compile(r"schema\.org/Product$", re.I)}):
-        name_el = el.find(attrs={"itemprop": "name"})
-        price_el = el.find(attrs={"itemprop": re.compile(r"^(price|lowPrice)$")})
-        if not name_el or not price_el:
+_MD_PRODUCT_TYPE = re.compile(r"schema\.org/(?:Product|IndividualProduct|ProductModel)/?$", re.I)
+# a Product item scope nested inside one of these is a list member / related item, not the page's product
+_MD_NESTING_TYPE = re.compile(
+    r"schema\.org/(?:Product\w*|IndividualProduct|ItemList|ListItem|OfferCatalog|Offer|AggregateOffer|SomeProducts)/?$", re.I)
+_MD_RELATED_PROPS = frozenset({
+    "isrelatedto", "issimilarto", "isaccessoryorsparepartfor", "isconsumablefor", "itemlistelement", "item",
+    "hasvariant", "isvariantof", "model",
+})
+# item scopes whose 'name' is never the product title
+_MD_NOT_TITLE_TYPE = re.compile(
+    r"schema\.org/(?:Brand|Organization|Person|Review|Rating|AggregateRating|Place|PostalAddress|Offer|AggregateOffer)/?$", re.I)
+
+
+def _md_types(tag: Tag) -> list[str]:
+    t = tag.get("itemtype") or ""
+    if isinstance(t, list):
+        t = " ".join(t)
+    return t.split()
+
+
+def _md_is(tag: Tag, rx: re.Pattern) -> bool:
+    return any(rx.search(t) for t in _md_types(tag))
+
+
+def _md_props(tag: Tag) -> set[str]:
+    v = tag.get("itemprop") or ""
+    if isinstance(v, list):
+        v = " ".join(v)
+    return {p.lower() for p in v.split()}
+
+
+def _md_scope(tag: Tag) -> Optional[Tag]:
+    """The item scope a property tag belongs to (its nearest itemscope ancestor)."""
+    return tag.find_parent(attrs={"itemscope": True})
+
+
+def _md_own(scope: Tag, names: set[str]) -> list[Tag]:
+    """Property tags of `scope` itself (not of a nested Brand / Offer / Review / related Product scope)."""
+    return [t for t in scope.find_all(attrs={"itemprop": True}) if _md_props(t) & names and _md_scope(t) is scope]
+
+
+def _md_offer_scopes(scope: Tag, depth: int = 0) -> list[Tag]:
+    """The product scope plus its itemprop=offers scopes (Offer / AggregateOffer -> Offer)."""
+    out = [scope]
+    if depth < 2:
+        for t in _md_own(scope, {"offers"}):
+            if t.has_attr("itemscope"):
+                out.extend(_md_offer_scopes(t, depth + 1))
+    return out
+
+
+def _md_first(scopes: list[Tag], names: set[str]) -> Optional[Tag]:
+    for sc in scopes:
+        found = _md_own(sc, names)
+        if found:
+            return found[0]
+    return None
+
+
+def _md_value(tag: Optional[Tag]) -> Optional[str]:
+    if tag is None:
+        return None
+    for attr in ("content", "href", "src", "value"):
+        v = tag.get(attr)
+        if v:
+            return str(v)
+    return tag.get_text(" ", strip=True) or None
+
+
+def _md_in_untitled_scope(tag: Tag, product: Tag) -> bool:
+    sc = _md_scope(tag)
+    return sc is not None and sc is not product and _md_is(sc, _MD_NOT_TITLE_TYPE)
+
+
+def _md_is_top_level(el: Tag) -> bool:
+    """A Product scope that is the page's own product: not a list member and not a related/similar item."""
+    if _md_props(el) & _MD_RELATED_PROPS:
+        return False
+    return not any(isinstance(p, Tag) and p.has_attr("itemscope") and _md_is(p, _MD_NESTING_TYPE) for p in el.parents)
+
+
+def _md_products(soup: BeautifulSoup, base_url: str, store: str,
+                 top_level_only: bool = False) -> Iterator[tuple[Offer, Optional[str]]]:
+    """(offer, explicit itemprop=url) for each schema.org/Product item scope."""
+    for el in soup.find_all(attrs={"itemtype": True}):
+        if not _md_is(el, _MD_PRODUCT_TYPE):
+            continue
+        if top_level_only and not _md_is_top_level(el):
+            continue
+        offer_scopes = _md_offer_scopes(el)
+        name_el = _md_first(offer_scopes, {"name"})
+        if name_el is None:  # name inside some other wrapper: any 'name' that is not a Brand / seller / review name
+            name_el = next((t for t in el.find_all(attrs={"itemprop": True})
+                            if "name" in _md_props(t) and not _md_in_untitled_scope(t, el)), None)
+        price_el = _md_first(offer_scopes, {"price", "lowprice"})
+        if name_el is None or price_el is None:
             continue
         name = name_el.get("content") or name_el.get_text(" ", strip=True)
         price = parse_price(price_el.get("content") or element_price_text(price_el))
         if not name or price is None:
             continue
-        cur_el = el.find(attrs={"itemprop": "priceCurrency"})
+        cur_el = _md_first(offer_scopes, {"pricecurrency"})
         if cur_el is not None:
             cur = (cur_el.get("content") or cur_el.get_text(strip=True) or "RON").upper()
             if cur not in ("RON", "LEI"):
                 continue
-        url_el = el.find(attrs={"itemprop": "url"})
-        url = None
-        if url_el is not None:
-            url = url_el.get("href") or url_el.get("content")
+        explicit = _md_value(_md_first(offer_scopes, {"url"}))
+        url = explicit
         if not url:
             a = el.find("a", href=True)
             url = a["href"] if a else base_url
-        av = el.find(attrs={"itemprop": "availability"})
-        sku = el.find(attrs={"itemprop": "sku"})
-        out.append(Offer(
-            store=store, title=name.strip(), url=urljoin(base_url, url), price=price,
+        av = _md_first(offer_scopes, {"availability"})
+        sku = _md_first(offer_scopes, {"sku", "productid"})
+        image = _md_value(_md_first([el], {"image"}))
+        yield Offer(
+            store=store, title=" ".join(name.split()), url=urljoin(base_url, url), price=price,
             in_stock=availability_flag((av.get("href") or av.get("content") or av.get_text()) if av else None),
-            offer_id=(sku.get("content") or sku.get_text(strip=True)) if sku else None,
+            offer_id=(sku.get("content") or sku.get_text(strip=True) or None) if sku else None,
+            image=urljoin(base_url, image) if image else None,
             source="microdata",
-        ))
-    return _dedupe(out)
+        ), explicit
+
+
+def offers_from_microdata(soup: BeautifulSoup, base_url: str, store: str) -> list[Offer]:
+    return _dedupe([o for o, _ in _md_products(soup, base_url, store)])
 
 
 # --------------------------------------------------------------------------- embedded JSON
@@ -243,7 +337,7 @@ def embedded_json_blobs(html: str, soup: Optional[BeautifulSoup] = None) -> list
             continue
         if sc.get("id") == "__NEXT_DATA__" or typ == "application/json":
             try:
-                blobs.append(json.loads(raw))
+                blobs.append(json.loads(raw, strict=False))
             except ValueError:
                 pass
             continue
@@ -273,7 +367,7 @@ def embedded_json_blobs(html: str, soup: Optional[BeautifulSoup] = None) -> list
             lit = _balanced_json(raw, i)
             if lit:
                 try:
-                    blobs.append(json.loads(lit))
+                    blobs.append(json.loads(lit, strict=False))
                 except ValueError:
                     pass
     return blobs
@@ -306,7 +400,8 @@ def _num_from(v: Any) -> Optional[float]:
     if isinstance(v, (int, float)) and not isinstance(v, bool):
         return float(v) if 0 < v < 10_000_000 else None
     if isinstance(v, str) and re.search(r"\d", v) and len(v) < 40:
-        return parse_price(v)
+        p = parse_price(v)
+        return p if p is not None and p < 10_000_000 else None
     return None
 
 
@@ -379,77 +474,230 @@ _NOT_PRICE_CONTEXT = re.compile(
     r"(/\s*lun|lunar|rate|rată|rata|economis|reducere|discount|cashback|voucher|transport|livrare|puncte|-\s*\d|garan)",
     re.I,
 )
-_OLD_CLASS = re.compile(r"(old|vechi|initial|rrp|prp|strike|before|crossed|regular|list|was)", re.I)
-_SKIP_LINK = re.compile(r"(#|javascript:|/cos|/cart|/login|/wishlist|/compare|/favorite|mailto:|tel:)", re.I)
+# Links that are never the product link of a card. Anchored to whole path segments, so /carte/... (books),
+# /cartuse-... (cartridges) and /cosmetice/... are product links, and /p/1#reviews is the product itself.
+_SKIP_LINK = re.compile(
+    r"^\s*(?:#|javascript:|mailto:|tel:|sms:|whatsapp:)"
+    r"|/(?:cos|cart|checkout|login|wishlist|compare|favorites?)(?:[/?#]|$)"
+    r"|[?&](?:add[-_]?to[-_]?cart|add_to_wishlist|wishlist|compare)=",
+    re.I,
+)
+_NON_CONTENT_TAGS = frozenset({"script", "style", "option", "title", "noscript", "template", "select", "textarea"})
+_CURRENCY_WORD_RE = re.compile(r"(?<![^\W\d_])(?:lei|ron)\b", re.I)    # "lei" not glued to a letter
+_PRICE_TEXT_MAX = 80                                                    # a price element's text is short
+_SPLIT_PREFIX_RE = re.compile(r"[\d\s.,]+")
+
+# Old-price detection by class: class tokens are split into words on '-', '_' and camelCase boundaries, so
+# 'font-bold' / 'price-holder' / 'product-list-item' are not old prices, while 'product-old-price',
+# 'price__old', 'oldPrice', 'priceOld', 'pret-vechi', 'line-through', 'regular-price' are.
+_CLASS_WORD_SPLIT = re.compile(r"[-_\s]+|(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
+_OLD_WORDS = frozenset({"old", "vechi", "rrp", "prp", "crossed", "barred", "taiat"})
+_OLD_IF_PRICE_WORDS = frozenset({"regular", "initial", "before", "was", "original", "full", "previous", "prev", "anterior"})
+_PRICE_WORDS = frozenset({"price", "prices", "pret", "preturi", "amount"})
 
 
-def _is_old_price_node(node: Tag) -> bool:
-    for p in [node, *list(node.parents)[:3]]:
-        if not isinstance(p, Tag):
-            continue
+def _is_old_class_token(token: str) -> bool:
+    low = token.lower()
+    if "linethrough" in re.sub(r"[-_]", "", low) or re.search(r"list[-_]*price", low):
+        return True
+    words = {w.lower() for w in _CLASS_WORD_SPLIT.split(token) if w}
+    if any(w in _OLD_WORDS or w.startswith(("strike", "crossed")) for w in words):
+        return True
+    return bool(words & _OLD_IF_PRICE_WORDS) and bool(words & _PRICE_WORDS)
+
+
+def _is_old_price_node(node: Tag, stop: Optional[Tag] = None) -> bool:
+    """Price element (or one of its 3 nearest ancestors below `stop`) marks a struck-through / old price."""
+    p: Any = node
+    for _ in range(4):
+        if not isinstance(p, Tag) or p is stop:
+            break
         if p.name in ("s", "del", "strike"):
             return True
-        cls = " ".join(p.get("class") or [])
-        if _OLD_CLASS.search(cls):
+        if any(_is_old_class_token(c) for c in (p.get("class") or [])):
             return True
+        if "line-through" in str(p.get("style") or "").lower():
+            return True
+        p = p.parent
     return False
+
+
+def _short_price_text(el: Tag) -> Optional[str]:
+    raw = el.get_text(" ", strip=True)
+    if len(raw) > _PRICE_TEXT_MAX:
+        return None
+    return element_price_text(el)
+
+
+def _price_seed(s: Any) -> bool:
+    return bool(s) and bool(_CURRENCY_WORD_RE.search(s))
+
+
+def _price_elements(root: Tag) -> Iterator[tuple[Tag, float, str]]:
+    """(element, price, context text) for every 'NNN lei' price under root, also when the digits, the
+    <sup> decimals and the currency sit in separate text nodes ("2.199<sup>99</sup> <span>Lei</span>",
+    "<span>2.599</span><span>99 Lei</span>"). Each element is the smallest one holding the whole price."""
+    seen: set[int] = set()
+    for tn in root.find_all(string=_price_seed):
+        par = tn.parent
+        if not isinstance(par, Tag) or par.name in _NON_CONTENT_TAGS:
+            continue
+        if any(isinstance(p, Tag) and p.name in _NON_CONTENT_TAGS for p in par.parents):
+            continue
+        el: Optional[Tag] = None
+        value: Optional[float] = None
+        ctx = ""
+        if PRICE_WITH_CURRENCY_RE.search(str(tn)):
+            el = par
+            text = element_price_text(par)
+            matches = list(PRICE_WITH_CURRENCY_RE.finditer(text))
+            if len(matches) == 1:
+                value, ctx = parse_price(matches[0].group(0)), par.get_text(" ", strip=True)
+                # integer part in a sibling element: "<span>2.599</span><span>99 Lei</span>"
+                up = par
+                for _ in range(2):
+                    if up is root or not isinstance(up.parent, Tag) or up.parent.name in ("body", "html"):
+                        break
+                    inner = element_price_text(up)
+                    outer = _short_price_text(up.parent)
+                    if not outer or not outer.endswith(inner) or not _SPLIT_PREFIX_RE.fullmatch(outer[:-len(inner)]):
+                        break
+                    up = up.parent
+                    el, value, ctx = up, parse_price(outer), outer
+            else:  # old and new price in one parent: this text node's own price
+                value, ctx = parse_price(str(tn)), " ".join(str(tn).split())
+        else:  # currency alone ("Lei", ",99 lei"): the digits are in sibling elements
+            cand: Any = par
+            for _ in range(3):
+                if not isinstance(cand, Tag) or cand.name in ("body", "html", "[document]"):
+                    break
+                text = _short_price_text(cand)
+                if text is None:
+                    break
+                if PRICE_WITH_CURRENCY_RE.search(text):
+                    el, value, ctx = cand, parse_price(text), text
+                    break
+                if cand is root:
+                    break
+                cand = cand.parent
+        if el is None or value is None or id(el) in seen:
+            continue
+        seen.add(id(el))
+        yield el, value, ctx
+
+
+def _anchor_texts(a: Tag) -> list[str]:
+    out = [a.get("title") or "", a.get("aria-label") or ""]
+    out.extend(h.get_text(" ", strip=True) for h in a.find_all(re.compile(r"^h[1-6]$")))
+    out.append(a.get_text(" ", strip=True))
+    out.extend((img.get("alt") or img.get("title") or "") for img in a.find_all("img"))
+    return [" ".join(str(t).split()) for t in out if t and str(t).strip()]
+
+
+def _best_title(anchors: list[Tag], container: Tag) -> str:
+    """Longest name among the product's links (title attribute, heading, link text, image alt); a heading
+    of the card when the links carry no usable name ("Vezi produs")."""
+    cands = [t for a in anchors for t in _anchor_texts(a)]
+    clean = [t for t in cands if len(t) <= 300 and not PRICE_WITH_CURRENCY_RE.search(t)]
+    best = max(clean or cands, key=len, default="")
+    if len(best) < 12:
+        heads = [" ".join(h.get_text(" ", strip=True).split()) for h in container.find_all(re.compile(r"^h[1-6]$"), limit=3)]
+        heads = [h for h in heads if h and len(h) <= 300 and not PRICE_WITH_CURRENCY_RE.search(h)]
+        best = max([best, *heads], key=len)
+    return best
+
+
+def _link_groups(node: Tag, base_url: str, page_key: str, stop_after: int = 0) -> dict[str, list[Tag]]:
+    """Product-link candidates under node (node itself when it is a link), grouped by canonical URL.
+    With stop_after=N, scanning stops as soon as more than N distinct URLs were seen."""
+    anchors = node.find_all("a", href=True)
+    if node.name == "a" and node.has_attr("href"):
+        anchors.insert(0, node)
+    groups: dict[str, list[Tag]] = {}
+    for a in anchors:
+        href = str(a.get("href") or "").strip()
+        if not href or _SKIP_LINK.search(href):
+            continue
+        url = urljoin(base_url, href)
+        if not url.lower().startswith(("http://", "https://")):
+            continue
+        key = canonical_url(url)
+        if key == page_key:          # back to this listing (sort, paging, "?add=..." buttons)
+            continue
+        groups.setdefault(key, []).append(a)
+        if stop_after and len(groups) > stop_after:
+            break
+    return groups
+
+
+def _dominant_link(node: Tag, base_url: str, page_key: str) -> Optional[tuple[str, list[Tag]]]:
+    """A card whose links go to several URLs (product + brand / seller / category link): the one URL whose
+    link has a real name (>= 12 chars), else the one URL with an image link."""
+    groups = _link_groups(node, base_url, page_key)
+    named = [k for k, anchors in groups.items() if any(len(t) >= 12 for a in anchors for t in _anchor_texts(a))]
+    if len(named) == 1:
+        return named[0], groups[named[0]]
+    if not named:
+        imaged = [k for k, anchors in groups.items() if any(a.find("img") for a in anchors)]
+        if len(imaged) == 1:
+            return imaged[0], groups[imaged[0]]
+    return None
+
+
+def _card_for(el: Tag, base_url: str, page_key: str) -> Optional[tuple[Tag, str, list[Tag]]]:
+    """Climb from a price element to the container of exactly one product: (container, url key, links).
+
+    Climbing stops at the first container whose links point to more than one product URL: above that
+    level the price could be attached to a neighbouring card's product."""
+    node: Any = el
+    best: Optional[tuple[Tag, str, list[Tag]]] = None
+    for _ in range(8):
+        if not isinstance(node, Tag) or node.name in ("body", "html", "[document]"):
+            break
+        groups = _link_groups(node, base_url, page_key, stop_after=1)
+        if len(groups) > 1:
+            if best is None:   # the first level with links already has several: card with extra links
+                dom = _dominant_link(node, base_url, page_key)
+                if dom:
+                    best = (node, dom[0], dom[1])
+            break
+        if groups:
+            (key, anchors), = groups.items()
+            best = (node, key, anchors)
+            if len(_best_title(anchors, node)) >= 12:
+                break
+        node = node.parent
+    return best
 
 
 def heuristic_cards(soup: BeautifulSoup, base_url: str, store: str, min_cards: int = 3) -> list[Offer]:
     """Find repeated containers with a product link and a 'NNN lei' price."""
     found: dict[str, Offer] = {}
     seen_containers: set[int] = set()
-    for text_node in soup.find_all(string=PRICE_WITH_CURRENCY_RE):
-        el = text_node.parent
-        if not isinstance(el, Tag) or el.name in ("script", "style", "option", "title"):
+    page_key = canonical_url(base_url)
+    for el, _, _ in _price_elements(soup):
+        card = _card_for(el, base_url, page_key)
+        if card is None:
             continue
-        # climb to a container that contains a meaningful product link
-        container = el
-        link = None
-        for _ in range(7):
-            container = container.parent
-            if not isinstance(container, Tag) or container.name in ("body", "html"):
-                container = None
-                break
-            for a in container.find_all("a", href=True):
-                href = a["href"]
-                if _SKIP_LINK.search(href):
-                    continue
-                txt = a.get("title") or a.get_text(" ", strip=True)
-                if not txt:
-                    img = a.find("img", alt=True)
-                    txt = img["alt"] if img else ""
-                if len(txt) >= 12:
-                    link = (a, txt)
-                    break
-            if link:
-                break
-        if not container or not link or id(container) in seen_containers:
+        container, key, anchors = card
+        if id(container) in seen_containers or key in found:
             continue
         seen_containers.add(id(container))
+        title = _best_title(anchors, container)
+        if len(title) < 4 or not re.search(r"[^\W\d_]", title):
+            continue
         # prices inside this container
         cur: list[float] = []
         old: list[float] = []
-        for tn in container.find_all(string=PRICE_WITH_CURRENCY_RE):
-            par = tn.parent
-            if not isinstance(par, Tag):
-                continue
-            ctx = par.get_text(" ", strip=True)
+        for par, p, ctx in _price_elements(container):
             if _NOT_PRICE_CONTEXT.search(ctx):
                 continue
-            p = parse_price(element_price_text(par))
-            if p is None:
-                continue
-            (old if _is_old_price_node(par) else cur).append(p)
+            (old if _is_old_price_node(par, stop=container) else cur).append(p)
         if not cur:
             continue
         price = cur[0]
         old_price = max(old) if old else (max(cur) if len(cur) > 1 and max(cur) > price * 1.02 else None)
-        a, title = link
-        url = urljoin(base_url, a["href"])
-        key = canonical_url(url)
-        if key in found:
-            continue
+        url = urljoin(base_url, str(anchors[0]["href"]).strip())
         ctext = container.get_text(" ", strip=True).lower()
         stock: Optional[bool] = None
         if any(x in ctext for x in ("stoc epuizat", "indisponibil", "nu este in stoc", "nu este în stoc", "out of stock")):
@@ -457,7 +705,7 @@ def heuristic_cards(soup: BeautifulSoup, base_url: str, store: str, min_cards: i
         elif any(x in ctext for x in ("în stoc", "in stoc", "disponibil", "stoc limitat", "ultimul produs")):
             stock = True
         found[key] = Offer(
-            store=store, title=" ".join(title.split()), url=url, price=price,
+            store=store, title=title, url=url, price=price,
             old_price=old_price if old_price and old_price > price else None,
             in_stock=stock, source="heuristic",
         )
@@ -481,12 +729,18 @@ def _dedupe(offers: list[Offer]) -> list[Offer]:
 
 def extract_offers(html: str, base_url: str, store: str, *, soup: Optional[BeautifulSoup] = None,
                    allow_heuristic: bool = True, min_listing: int = 2) -> list[Offer]:
-    """Try every generic strategy and return the first that yields a plausible listing."""
+    """Try every generic strategy and return the first that yields a plausible listing.
+
+    When no strategy reaches min_listing, the first non-empty structured result (JSON-LD, microdata,
+    embedded JSON) is returned: a search with a single hit is still a valid result."""
     soup = soup or make_soup(html)
+    best_structured: list[Offer] = []
     for fn in (offers_from_jsonld, offers_from_microdata):
         offers = fn(soup, base_url, store)
         if len(offers) >= min_listing:
             return offers
+        if offers and not best_structured:
+            best_structured = offers
     best: list[Offer] = []
     for blob in embedded_json_blobs(html, soup):
         offers = offers_from_json_blob(blob, base_url, store)
@@ -494,40 +748,171 @@ def extract_offers(html: str, base_url: str, store: str, *, soup: Optional[Beaut
             best = offers
     if len(best) >= min_listing:
         return best
+    if best and not best_structured:
+        best_structured = best
     if allow_heuristic:
         offers = heuristic_cards(soup, base_url, store)
         if offers:
             return offers
-    return []
+    return best_structured
 
 
-def extract_product_page(html: str, url: str, store: str) -> Optional[Offer]:
-    """Single product page -> Offer (JSON-LD, microdata, meta tags)."""
+# --------------------------------------------------------------------------- product page
+
+def _ld_page_products(soup: BeautifulSoup) -> tuple[list[dict], bool]:
+    """Top-level JSON-LD Product / ProductGroup objects (also a WebPage's mainEntity), never ItemList /
+    OfferCatalog members (related products, a category page we were redirected to).
+    Second value: the page has an ItemList of products."""
+    out: list[dict] = []
+    has_list = False
+    for obj in iter_jsonld(soup):
+        types = _types(obj)
+        if "product" in types or "productgroup" in types:
+            out.append(obj)
+        elif "itemlist" in types or "offercatalog" in types:
+            has_list = has_list or bool(obj.get("itemListElement"))
+        else:
+            for k in ("mainEntity", "mainEntityOfPage"):
+                ent = obj.get(k)
+                if isinstance(ent, dict) and _types(ent) & {"product", "productgroup"}:
+                    out.append(ent)
+    return out, has_list
+
+
+def _ld_urls(obj: dict, *keys: str) -> list[str]:
+    out = []
+    for k in keys:
+        v = obj.get(k)
+        if isinstance(v, list):
+            v = v[0] if v else None
+        if isinstance(v, dict):
+            v = v.get("url") or v.get("@id")
+        if isinstance(v, str) and v.strip():
+            out.append(v.strip())
+    return out
+
+
+def _same_page(a: str, b: str) -> bool:
+    """Same URL including the query (Shopify-style ?variant=...)."""
+    try:
+        return canonical_url(a) == canonical_url(b) and urlsplit(a).query == urlsplit(b).query
+    except ValueError:
+        return False
+
+
+def _ld_page_offer(obj: dict, url: str, store: str, page_urls: list[str]) -> Optional[Offer]:
+    o = offer_from_ld_product(obj, url, store)
+    if o is not None or "productgroup" not in _types(obj):
+        return o
+    # ProductGroup without its own offers: the variant this URL points to, or the common price of all variants
+    variants = obj.get("hasVariant")
+    variants = [v for v in (variants if isinstance(variants, list) else [variants]) if isinstance(v, dict)]
+    priced = []
+    for v in variants:
+        vo = offer_from_ld_product({**v, "name": v.get("name") or obj.get("name")}, url, store)
+        if vo is not None:
+            priced.append((vo, v))
+    for vo, v in priced:
+        vu = _ld_urls(v, "url")
+        if vu and any(_same_page(urljoin(url, vu[0]), p) for p in page_urls):
+            return vo
+    if priced and len({vo.price for vo, _ in priced}) == 1:
+        return priced[0][0]
+    return None
+
+
+def _page_keys(soup: BeautifulSoup, url: str, requested_url: Optional[str]) -> set[str]:
+    keys = {canonical_url(url)}
+    if requested_url:
+        keys.add(canonical_url(requested_url))
+    link = soup.find("link", rel="canonical", href=True)
+    if link:
+        keys.add(canonical_url(urljoin(url, link["href"])))
+    og = soup.find("meta", attrs={"property": "og:url"})
+    if og and og.get("content"):
+        keys.add(canonical_url(urljoin(url, og["content"])))
+    return keys
+
+
+def _pick_page_offer(cands: list[tuple[Offer, list[str], list[str]]], keys: set[str], url: str) -> tuple[Optional[Offer], bool]:
+    """Choose the page's own product among top-level candidates (offer, explicit urls, other ids).
+
+    Returns (offer, ambiguous): a URL match wins; otherwise a single candidate, or the only one that does
+    not link to another page. Several candidates that all point elsewhere look like a listing -> ambiguous."""
+    if not cands:
+        return None, False
+    for o, explicit, ids in cands:
+        if {canonical_url(urljoin(url, u)) for u in explicit + ids} & keys:
+            return o, False
+    if len(cands) == 1:
+        return cands[0][0], False
+    unlinked = [o for o, explicit, _ in cands if not explicit]
+    if len(unlinked) == 1:
+        return unlinked[0], False
+    if len(cands) >= 3:
+        return None, True
+    return (unlinked or [c[0] for c in cands])[0], False
+
+
+def _meta(soup: BeautifulSoup, prop: str) -> Optional[str]:
+    m = soup.find("meta", attrs={"property": prop}) or soup.find("meta", attrs={"name": prop})
+    v = m.get("content") if m else None
+    return str(v).strip() if v and str(v).strip() else None
+
+
+def extract_product_page(html: str, url: str, store: str, *, requested_url: Optional[str] = None) -> Optional[Offer]:
+    """Single product page -> Offer (JSON-LD, microdata, meta tags).
+
+    Only the page's own product counts: top-level JSON-LD Product / ProductGroup and microdata Product
+    scopes that are not inside a list or another product. When there are several, the one whose url / @id
+    matches this page (url, requested_url, <link rel=canonical>, og:url) wins. Related-product lists and a
+    category page we were redirected to never yield a product."""
     soup = make_soup(html)
-    lds = offers_from_jsonld(soup, url, store)
-    if lds:
-        o = lds[0]
+    keys = _page_keys(soup, url, requested_url)
+    page_urls = [url] + ([requested_url] if requested_url else [])
+    ld_objs, has_list = _ld_page_products(soup)
+    cands = []
+    for obj in ld_objs:
+        o = _ld_page_offer(obj, url, store, page_urls)
+        if o is not None:
+            offers = obj.get("offers") if isinstance(obj.get("offers"), dict) else {}
+            cands.append((o, _ld_urls(obj, "url") + _ld_urls(offers, "url"), _ld_urls(obj, "@id")))
+    o, ambiguous = _pick_page_offer(cands, keys, url)
+    if o:
         o.url = url
         return o
-    md = offers_from_microdata(soup, url, store)
-    if md:
-        md[0].url = url
-        return md[0]
+    md = [(o, [u] if u else [], []) for o, u in _md_products(soup, url, store, top_level_only=True)]
+    o, md_ambiguous = _pick_page_offer(md, keys, url)
+    if o:
+        o.url = url
+        return o
+    listing_like = ambiguous or md_ambiguous or (has_list and not ld_objs)
+    # meta tags: rejected when the page declares a currency other than RON
+    currencies = [c.upper() for c in (_meta(soup, "product:price:currency"), _meta(soup, "og:price:currency")) if c]
+    md_cur = soup.find(attrs={"itemprop": "priceCurrency"})
+    if md_cur is not None:
+        c = str(md_cur.get("content") or md_cur.get_text(strip=True) or "").upper()
+        if c:
+            currencies.append(c)
+    foreign = bool(currencies) and not any(c in ("RON", "LEI") for c in currencies)
     price = None
-    for prop in ("product:price:amount", "og:price:amount", "twitter:data1"):
-        m = soup.find("meta", attrs={"property": prop}) or soup.find("meta", attrs={"name": prop})
-        if m and m.get("content"):
-            price = parse_price(m["content"])
+    for prop, cur_prop in (("product:price:amount", "product:price:currency"),
+                           ("og:price:amount", "og:price:currency"), ("twitter:data1", None)):
+        cur = _meta(soup, cur_prop) if cur_prop else None
+        if (cur and cur.upper() not in ("RON", "LEI")) or (cur_prop is None and foreign):
+            continue
+        content = _meta(soup, prop)
+        if content:
+            price = parse_price(content)
             if price:
                 break
-    if price is None:
+    if price is None and not foreign and not listing_like:
         el = soup.find(attrs={"data-price-type": "finalPrice"}) or soup.find(attrs={"itemprop": "price"})
         if el is not None:
             price = parse_price(el.get("data-price-amount") or el.get("content") or element_price_text(el))
     if price is None:
         return None
-    t = soup.find("meta", attrs={"property": "og:title"})
-    title = t["content"] if t and t.get("content") else (soup.title.get_text(strip=True) if soup.title else url)
+    title = _meta(soup, "og:title") or (soup.title.get_text(strip=True) if soup.title else "") or url
     avail = soup.find("meta", attrs={"property": re.compile(r"(product|og):availability")})
     return Offer(store=store, title=title.strip(), url=url, price=price,
                  in_stock=availability_flag(avail.get("content")) if avail else None, source="meta")

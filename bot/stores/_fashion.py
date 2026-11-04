@@ -149,8 +149,8 @@ def image_of(card: Optional[Tag], base: str, selector: str = "img") -> Optional[
 
 _PLAIN_NUM = re.compile(r"^\s*\d+(?:\.\d+)?\s*$")
 UNIT_PRICE_RE = re.compile(
-    r"(?:lei|ron)\s*/\s*(?:\d+(?:[.,]\d+)?\s*)?(?:ml|cl|l|g|gr|kg|buc|bucat[aăi]|m|oz|doz[aăe]|capsul[aăe]|tablet[aăe]|"
-    r"plic(?:uri)?|spal[aă]ri)\b",
+    r"(?:lei|ron)\*?\s*/\s*(?:\d+(?:[.,]\d+)?\s*)?(?:ml|cl|l|litr\w*|g|gr|gram\w*|kg|kilogram\w*|buc|bucat[aăi]|m|oz|"
+    r"doz[aăe]|capsul[aăe]|tablet[aăe]|plic(?:uri)?|spal[aă]ri)\b",
     re.I,
 )
 NOT_PRICE_RE = re.compile(
@@ -235,7 +235,7 @@ def price_lines(lines: Iterable[Any]) -> dict[str, Any]:
             ctx = line[pos:m.start()]
             tail = line[m.end():m.end() + 14]
             pos = m.end()
-            if re.match(r"\s*/", tail):
+            if re.match(r"\*?\s*/", tail):
                 continue  # unit price
             v = parse_price(m.group(0))
             if not v:
@@ -271,7 +271,7 @@ def labeled_prices(texts: Iterable[Any]) -> tuple[Optional[float], Optional[floa
         pos = 0
         for m in PRICE_WITH_CURRENCY_RE.finditer(line):
             ctx, pos = line[pos:m.start()], m.end()
-            if re.match(r"\s*/", line[m.end():m.end() + 6]):
+            if re.match(r"\*?\s*/", line[m.end():m.end() + 6]):
                 continue
             v = parse_price(m.group(0))
             if not v:

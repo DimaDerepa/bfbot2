@@ -27,7 +27,7 @@ from ..models import Offer
 from .base import Store
 from ._fashion import (
     NextPager, clean_url, dedupe, first_el, higher_money_in, image_of, join_title, landed_on_home, longest, norm,
-    next_page_url, num, old_price_in, outermost, pick_price, raise_if_challenge, stock_from_text, text_of,
+    next_page_url, old_price_in, outermost, pick_price, raise_if_challenge, stock_from_text, text_of,
 )
 
 _ID_RE = re.compile(r"(?:-(\d{4,})|_([a-f0-9]{6,}))\.html$", re.I)

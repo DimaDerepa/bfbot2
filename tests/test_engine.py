@@ -18,6 +18,7 @@ class FakeTG(Telegram):
 
     def send(self, text, chat_id=None, preview=False, silent=False):
         self.messages.append((chat_id or ",".join(self.chat_ids), text))
+        return True
 
     def api(self, method, _http_timeout=30, **params):
         if method == "getUpdates":
