@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import Optional
 
+from .categorize import infer_categories
 from .config import Config, watch_from_dict
 from .matcher import evaluate
 from .models import Offer, Watch
@@ -85,6 +86,8 @@ class Engine:
                 keys = [k for k, c in self.reg.items() if c.enabled_by_default]
             keys = [k for k in keys if k not in set(self.settings.disabled_stores)]
             cats = watch.categories or self.settings.default_categories
+            if not cats and watch.query:
+                cats = sorted(infer_categories(watch.query))  # e.g. "rtx 5070" -> pc: skip fashion/beauty shops
             if cats:
                 cats_set = set(cats)
                 keys = [k for k in keys if self.reg[k].aggregator or "general" in self.reg[k].categories
@@ -94,8 +97,9 @@ class Engine:
 
     # ------------------------------------------------------------------ fetching
     def _make_store(self, cls: type[Store]) -> Store:
-        http = Http(timeout=self.settings.timeout, delay=self.settings.request_delay,
-                    proxy=proxy_for(cls.key), extra_headers=cls.extra_headers or None)
+        http = Http(timeout=self.settings.timeout, delay=max(self.settings.request_delay, cls.min_delay),
+                    proxy=proxy_for(cls.key), extra_headers=cls.extra_headers or None,
+                    browser_key=cls.key)
         return cls(http, max_pages=self.settings.max_pages)
 
     def _run_store(self, cls: type[Store], queries: list[str], urls: list[str]) -> StoreRun:
@@ -248,6 +252,9 @@ class Engine:
 
     def _store_health(self, runs: dict[str, StoreRun]) -> None:
         threshold = max(1, int(self.settings.store_fail_alert_after))
+        down: list[str] = []
+        up: list[str] = []
+        any_blocked = False
         for k, r in runs.items():
             if k.startswith("web:") and not r.results:
                 continue
@@ -257,12 +264,17 @@ class Engine:
             name = self.store_names.get(k, k)
             if failed and h["cf"] >= threshold and not h.get("alerted"):
                 h["alerted"] = True
-                hint = (" Похоже, сайт блокирует запросы из дата-центра GitHub — помогает прокси (секрет BOT_PROXY)."
-                        if r.blocked else "")
-                self._send(f"⚠️ <b>{esc(name)}</b> не отвечает уже {h['cf']} проверок подряд: <code>{esc(err)}</code>.{hint}")
+                any_blocked = any_blocked or r.blocked
+                down.append(f"• <b>{esc(name)}</b> — {h['cf']} проверок подряд: <code>{esc(err[:120])}</code>")
             elif not failed and h.get("alerted"):
                 h["alerted"] = False
-                self._send(f"✅ <b>{esc(name)}</b> снова работает.")
+                up.append(esc(name))
+        if down:
+            hint = ("\nПохоже, сайт блокирует запросы из облака GitHub. Цены этого магазина часто видны через "
+                    "агрегаторы (compari.ro); иначе поможет прокси или запуск дома — см. README." if any_blocked else "")
+            self._send("⚠️ Магазины не отвечают:\n" + "\n".join(down) + hint)
+        if up:
+            self._send("✅ Снова работают: " + ", ".join(up))
 
     def _send(self, text: str) -> None:
         if self.dry_run:

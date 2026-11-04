@@ -28,6 +28,7 @@ class Store:
     aggregator: ClassVar[bool] = False            # price comparison site (covers many shops)
     enabled_by_default: ClassVar[bool] = True
     page_size: ClassVar[int] = 40
+    min_delay: ClassVar[float] = 0.0              # store-specific minimum pause between requests (s)
     extra_headers: ClassVar[dict] = {}
 
     def __init__(self, http: Http, *, max_pages: int = 1) -> None:

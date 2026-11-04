@@ -105,8 +105,8 @@ def cmd_daemon(args) -> int:
 
 
 def _store_instance(cls, cfg):
-    http = Http(timeout=cfg.settings.timeout, delay=cfg.settings.request_delay, proxy=proxy_for(cls.key),
-                extra_headers=cls.extra_headers or None)
+    http = Http(timeout=cfg.settings.timeout, delay=max(cfg.settings.request_delay, cls.min_delay), proxy=proxy_for(cls.key),
+                extra_headers=cls.extra_headers or None, browser_key=cls.key)
     return cls(http, max_pages=cfg.settings.max_pages)
 
 
@@ -170,6 +170,7 @@ def cmd_diag(args) -> int:
         except Exception as e:
             info.update(ok=False, error=f"{type(e).__name__}: {e}", trace=traceback.format_exc()[-1500:])
         info["seconds"] = round(time.monotonic() - t0, 1)
+        info["browser_used"] = getattr(st.http, "browser_used", 0)
         lr = st.http.last_response
         if lr is not None:
             info.update(status=lr.status, final_url=lr.url, bytes=len(lr.text),
@@ -187,10 +188,12 @@ def cmd_diag(args) -> int:
                   f"strategy={info.get('strategy')} {info.get('error', '')[:150]}")
     with open(os.path.join(args.out, "report.json"), "w", encoding="utf-8") as f:
         json.dump(report, f, ensure_ascii=False, indent=1)
-    lines = [f"# Diagnostics: `{args.query}`\n", "| store | ok | HTTP | offers | strategy | error |", "|---|---|---|---|---|---|"]
+    lines = [f"# Diagnostics: `{args.query}`\n", "| store | ok | HTTP | offers | strategy | browser | sec | error |",
+             "|---|---|---|---|---|---|---|---|"]
     for k, i in sorted(report["stores"].items()):
         lines.append(f"| {k} | {'✅' if i.get('ok') and i.get('count') else ('⚠️' if i.get('ok') else '❌')} | {i.get('status')} | "
-                     f"{i.get('count', '')} | {i.get('strategy', '')} | {(i.get('error') or '')[:80]} |")
+                     f"{i.get('count', '')} | {i.get('strategy', '')} | {i.get('browser_used') or ''} | {i.get('seconds')} | "
+                     f"{(i.get('error') or '')[:80]} |")
     with open(os.path.join(args.out, "report.md"), "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
     return 0

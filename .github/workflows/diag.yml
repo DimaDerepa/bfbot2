@@ -33,7 +33,9 @@ jobs:
           cache: pip
 
       - name: Install
-        run: pip install -r requirements-dev.txt
+        run: |
+          pip install -r requirements-dev.txt
+          pip install playwright && python -m playwright install --with-deps chromium
 
       - name: Unit tests
         continue-on-error: true
@@ -63,9 +65,15 @@ jobs:
             echo "::group::query $i: $q"
             python -m bot diag --query "$q" --stores "$stores" --out "diag-out/q$i" || true
             echo "$q" > "diag-out/q$i/query.txt"
+            # retry the stores that failed or returned nothing, this time through headless Chromium
+            failed="$(python -c "import json,sys; r=json.load(open(sys.argv[1])); print(','.join(k for k,v in r['stores'].items() if not (v.get('ok') and v.get('count'))))" "diag-out/q$i/report.json" 2>/dev/null || true)"
+            if [ -n "$failed" ]; then
+              echo "browser retry: $failed"
+              BOT_BROWSER=1 python -m bot diag --query "$q" --stores "$failed" --out "diag-out/q$i/browser" || true
+            fi
             echo "::endgroup::"
           done < queries.txt
-          { for d in diag-out/q*/; do cat "$d/report.md"; echo; done; } > diag-out/SUMMARY.md
+          { for d in diag-out/q*/; do cat "$d/report.md"; echo; if [ -f "$d/browser/report.md" ]; then echo "**Retry via headless browser:**"; echo; cat "$d/browser/report.md"; echo; fi; done; } > diag-out/SUMMARY.md
           cat diag-out/SUMMARY.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Publish to diag branch

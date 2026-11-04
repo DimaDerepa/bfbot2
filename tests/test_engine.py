@@ -30,7 +30,7 @@ class FakeStore(Store):
     key = "fake"
     name = "FakeShop"
     base_url = "https://fake.ro"
-    categories = ("electronics",)
+    categories = ("general",)
     offers: list[Offer] = []
     blocked = False
 
@@ -114,13 +114,13 @@ def test_store_block_warning_once_and_recovery():
     e.run_cycle()
     assert tg.messages == []             # first run: blocked, watch not initialised, no warning yet
     e.run_cycle()
-    assert len(tg.messages) == 1 and "не отвечает" in tg.messages[0][1] and "BOT_PROXY" in tg.messages[0][1]
+    assert len(tg.messages) == 1 and "не отвечают" in tg.messages[0][1] and "FakeShop" in tg.messages[0][1]
     e.run_cycle()
     assert len(tg.messages) == 1         # warned only once
     FakeStore.blocked = False
     e.run_cycle()
     texts = [m[1] for m in tg.messages]
-    assert any("снова работает" in t for t in texts)
+    assert any("Снова работают" in t for t in texts)
     assert any("найдено 1" in t for t in texts)  # digest happens once the store works
 
 

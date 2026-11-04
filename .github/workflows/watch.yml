@@ -29,6 +29,12 @@ jobs:
       - name: Install
         run: pip install -r requirements.txt
 
+      # Optional: repository variable BOT_BROWSER=1 (or a list like pcgarage,flanco) enables a headless
+      # Chromium fallback for sites that answer with a JS challenge. Adds ~1 min per run.
+      - name: Install browser (optional)
+        if: ${{ vars.BOT_BROWSER != '' }}
+        run: pip install playwright && python -m playwright install --with-deps chromium
+
       - name: Load state
         run: bash scripts/load_state.sh state.json
 
@@ -38,6 +44,7 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           BOT_PROXY: ${{ secrets.BOT_PROXY }}
           BOT_PROXY_STORES: ${{ vars.BOT_PROXY_STORES }}
+          BOT_BROWSER: ${{ vars.BOT_BROWSER }}
         run: python -m bot run --state state.json
 
       - name: Save state

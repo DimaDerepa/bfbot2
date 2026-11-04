@@ -103,12 +103,15 @@ class Http:
         proxy: Optional[str] = None,
         impersonate: str = "chrome",
         extra_headers: Optional[dict] = None,
+        browser_key: Optional[str] = None,
     ) -> None:
         self.timeout = timeout
         self.delay = delay
         self.retries = retries
         self.proxy = proxy
         self.headers = {**DEFAULT_HEADERS, **(extra_headers or {})}
+        self.browser_key = browser_key   # store key -> enables headless-browser fallback if BOT_BROWSER allows it
+        self.browser_used = 0
         self.requests_made = 0
         self.last_response: Optional[Response] = None   # kept even when an error is raised (diagnostics)
         if HAVE_CFFI:
@@ -172,7 +175,36 @@ class Http:
         raise last_exc
 
     def get(self, url: str, **kw: Any) -> Response:
-        return self.request("GET", url, **kw)
+        try:
+            return self.request("GET", url, **kw)
+        except BlockedError:
+            if not self._browser_ok():
+                raise
+            return self._browser_get(url, kw.get("params"))
+
+    def _browser_ok(self) -> bool:
+        if not self.browser_key:
+            return False
+        from . import browser
+
+        return browser.browser_enabled_for(self.browser_key) and browser.available()
+
+    def _browser_get(self, url: str, params: Optional[dict]) -> Response:
+        from urllib.parse import urlencode
+
+        from . import browser
+
+        full = url + (("&" if "?" in url else "?") + urlencode(params) if params else "")
+        log.info("browser fallback for %s", full)
+        resp = browser.fetch(self.browser_key or urlsplit(url).netloc, full, self.proxy)
+        self.browser_used += 1
+        self.requests_made += 1
+        self.last_response = resp
+        if looks_blocked(resp.status, resp.text):
+            raise BlockedError(f"blocked even in browser (HTTP {resp.status})", resp.status, full)
+        if resp.status >= 400:
+            raise FetchError(f"HTTP {resp.status} (browser)", resp.status, full)
+        return resp
 
     def get_json(self, url: str, **kw: Any) -> Any:
         headers = {"Accept": "application/json, text/plain, */*", **(kw.pop("headers", None) or {})}

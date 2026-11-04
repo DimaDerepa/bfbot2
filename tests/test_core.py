@@ -201,3 +201,12 @@ def test_product_page_meta_fallback():
     <meta property="product:price:amount" content="1599.99"></head></html>"""
     o = extract_product_page(html, "https://shop.ro/p", "shop")
     assert o and o.price == 1599.99 and "Magnifica" in o.title
+
+
+def test_infer_categories():
+    from bot.categorize import infer_categories
+    assert infer_categories("placa video rtx 5070") == {"pc"}
+    assert "fashion" in infer_categories("adidasi nike air max")
+    assert "beauty" in infer_categories("parfum dior sauvage edp")
+    assert infer_categories("ceva necunoscut xyz") == set()
+    assert "electronics" in infer_categories("iphone 16 pro 256gb")
