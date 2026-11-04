@@ -8,7 +8,7 @@ from typing import Optional
 from .config import parse_watch_spec, watch_from_dict
 from .engine import Engine
 from .models import Watch
-from .notify import esc
+from .notify import esc, esc_attr
 from .prices import fmt_price
 
 log = logging.getLogger("bot.tg")
@@ -17,9 +17,9 @@ HELP = """<b>Бот-охотник за скидками 🇷🇴</b>
 
 <b>Добавить товар:</b>
 <code>/add iphone 16 pro 256gb до 4800 -max -resigilat</code>
-<code>/add rtx 5070 <3200 >2000 @pcgarage,emag,altex</code>
+<code>/add rtx 5070 &lt;3200 &gt;2000 @pcgarage,emag,altex</code>
 <code>/add aspirator dyson v15 %25</code>  — скидка от 25%
-<code>/add https://www.emag.ro/... <2000</code> — конкретная страница товара
+<code>/add https://www.emag.ro/... &lt;2000</code> — конкретная страница товара
 
 <b>Критерии:</b>
 • <code>до 4800</code> или <code>&lt;4800</code> — максимальная цена, лей
@@ -52,10 +52,12 @@ class CommandProcessor:
         self.force_check = False
 
     # ------------------------------------------------------------------ polling
-    def poll(self, timeout: int = 0) -> int:
-        """Fetch and process pending updates. Returns number of processed messages."""
+    def poll(self, timeout: int = 0) -> Optional[int]:
+        """Fetch and process pending updates. Returns the number of processed messages,
+        or None when getUpdates failed (the daemon then backs off)."""
         if not self.tg.enabled:
             return 0
+        self._drop_stale_binding()
         offset = int(self.state.get("telegram", "offset", default=0) or 0)
         res = self.tg.api("getUpdates", _http_timeout=timeout + 15, offset=offset, timeout=timeout,
                           allowed_updates=["message"])
@@ -63,7 +65,7 @@ class CommandProcessor:
             desc = str(res.get("description", ""))
             if "webhook" in desc.lower():
                 self.tg.api("deleteWebhook")
-            return 0
+            return None
         n = 0
         for upd in res.get("result", []):
             self.state.data["telegram"]["offset"] = int(upd["update_id"]) + 1
@@ -87,11 +89,19 @@ class CommandProcessor:
 
     # ------------------------------------------------------------------ auth
     def authorized(self, chat_id: str) -> bool:
-        allowed = set(self.tg.chat_ids)
+        """TELEGRAM_CHAT_ID, when set, is the only authority; otherwise the chat bound by the first /start."""
+        if self.tg.chat_ids:
+            return chat_id in set(self.tg.chat_ids)
         bound = self.state.get("telegram", "chat_id")
-        if bound:
-            allowed.add(str(bound))
-        return chat_id in allowed
+        return bool(bound) and chat_id == str(bound)
+
+    def _drop_stale_binding(self) -> None:
+        """The owner set TELEGRAM_CHAT_ID (e.g. after a stranger took the bot with /start): forget the old
+        binding, so it cannot come back if the secret is removed later."""
+        bound = self.state.get("telegram", "chat_id")
+        if self.tg.chat_ids and bound and str(bound) not in set(self.tg.chat_ids):
+            log.warning("TELEGRAM_CHAT_ID is set; dropping the chat bound by /start (%s)", bound)
+            self.state.data["telegram"]["chat_id"] = None
 
     # ------------------------------------------------------------------ dispatch
     def handle(self, chat_id: str, text: str) -> Optional[str]:
@@ -105,7 +115,7 @@ class CommandProcessor:
         if cmd == "/start":
             if not self.tg.chat_ids and not self.state.get("telegram", "chat_id"):
                 self.state.data["telegram"]["chat_id"] = chat_id
-                return (f"✅ Чат привязан (chat_id <code>{chat_id}</code>). Теперь бот отвечает только вам.\n\n" + HELP)
+                return (f"✅ Чат привязан (chat_id <code>{esc(chat_id)}</code>). Теперь бот отвечает только вам.\n\n" + HELP)
             if self.authorized(chat_id):
                 return HELP
             return "⛔ Этот бот приватный."
@@ -150,13 +160,16 @@ class CommandProcessor:
         while w.id in existing:
             w.id = f"{base}-{n}"
             n += 1
+        # the id belongs to no current watch: whatever is stored under it is left over from a deleted watch
+        # (/del then /add of the same name) and would hide the new watch's digest and known offers
+        self.state.forget_watch(w.id)
         unknown = [s for s in (w.stores or []) + w.skip_stores if s not in self.engine.reg]
         d = w.to_dict()
         d.pop("origin", None)
         self.state.data["watches"].append(d)
         self.force_check = True
         idx = len(self.engine.all_watches())
-        warn = f"\n⚠️ Неизвестные магазины: {', '.join(unknown)} (см. /stores)" if unknown else ""
+        warn = f"\n⚠️ Неизвестные магазины: {esc(', '.join(unknown))} (см. /stores)" if unknown else ""
         return f"✅ Добавлено <b>#{idx}</b>: {esc(w.describe())}{warn}\n{self._when()}"
 
     def cmd_list(self, arg: str) -> str:
@@ -178,6 +191,7 @@ class CommandProcessor:
             return "Не нашёл такой пункт. /list"
         if w.origin == "telegram":
             self.state.data["watches"] = [d for d in self.state.data["watches"] if d.get("id") != w.id]
+            self.state.forget_watch(w.id)
             return f"🗑 Удалено: {esc(w.name)}"
         if w.id not in self.state.data["disabled"]:
             self.state.data["disabled"].append(w.id)
@@ -241,7 +255,7 @@ class CommandProcessor:
         for r in rows:
             old = f" <s>{fmt_price(r['op'])}</s>" if r.get("op") and r["op"] > r["p"] else ""
             store = esc(self.engine.store_names.get(r["s"], r["s"]))
-            lines.append(f"• <b>{fmt_price(r['p'])} лей</b>{old} — {store}\n  <a href=\"{esc(r['u'])}\">{esc(r['t'][:120])}</a>")
+            lines.append(f"• <b>{fmt_price(r['p'])} лей</b>{old} — {store}\n  <a href=\"{esc_attr(r['u'])}\">{esc(r['t'][:120])}</a>")
         return "\n".join(lines)
 
     def cmd_stores(self, arg: str) -> str:
@@ -256,7 +270,7 @@ class CommandProcessor:
             else:
                 st = f"🔴 ошибок подряд: {h['cf']} — {esc(h.get('last_error', '')[:80])}"
             agg = " (агрегатор)" if cls.aggregator else ""
-            lines.append(f"<code>{k}</code> {esc(cls.name)}{agg}: {st}")
+            lines.append(f"<code>{esc(k)}</code> {esc(cls.name)}{agg}: {st}")
         return "\n".join(lines)
 
     def cmd_status(self, arg: str) -> str:

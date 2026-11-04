@@ -35,7 +35,10 @@ jobs:
         if: ${{ vars.BOT_BROWSER != '' }}
         run: pip install playwright && python -m playwright install --with-deps chromium
 
+      # Fails (and so skips the check and the save) if the saved state exists but cannot be read,
+      # e.g. during a GitHub hiccup: an empty state must never be pushed over the real one.
       - name: Load state
+        id: load
         run: bash scripts/load_state.sh state.json
 
       - name: Check prices
@@ -48,7 +51,7 @@ jobs:
         run: python -m bot run --state state.json
 
       - name: Save state
-        if: always()
+        if: ${{ always() && steps.load.outcome == 'success' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: bash scripts/save_state.sh state.json

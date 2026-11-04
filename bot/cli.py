@@ -19,8 +19,7 @@ import traceback
 from concurrent.futures import ThreadPoolExecutor
 
 from .config import load_config
-from .engine import Engine
-from .net import Http, proxy_for
+from .engine import Engine, http_for_store
 from .notify import Telegram
 from .prices import fmt_price
 from .state import State
@@ -52,7 +51,9 @@ def _print_summary(summary: dict) -> None:
 def cmd_run(args) -> int:
     cfg = load_config(args.config)
     state = State.load(args.state)
-    tg = Telegram.from_env()
+    # --dry-run must not touch the real bot: no getUpdates (it would confirm and swallow the production
+    # bot's pending commands), no replies, no alerts
+    tg = Telegram(None) if args.dry_run else Telegram.from_env()
     engine = Engine(cfg, state, tg, dry_run=args.dry_run)
     if IMPORT_ERRORS:
         print("store import errors:", IMPORT_ERRORS, file=sys.stderr)
@@ -71,43 +72,86 @@ def cmd_run(args) -> int:
     return 0
 
 
-def cmd_daemon(args) -> int:
+def poll_backoff(fails: int) -> float:
+    """Pause after `fails` failed getUpdates calls in a row: 5 s, 10 s, 20 s ... at most 5 min."""
+    return float(min(300, 5 * 2 ** max(0, fails - 1))) if fails > 0 else 0.0
+
+
+def cycle_backoff(fails: int, interval: float) -> float:
+    """Delay before re-running a cycle that crashed `fails` times in a row: 1, 2, 4 ... min, at most the interval."""
+    return float(max(60, min(interval, 60 * 2 ** max(0, fails - 1))))
+
+
+def cmd_daemon(args, *, sleep=time.sleep, max_loops: int | None = None) -> int:
     cfg = load_config(args.config)
     state = State.load(args.state)
     tg = Telegram.from_env()
-    interval = int(os.environ.get("BOT_INTERVAL_MINUTES") or cfg.settings.interval_minutes) * 60
+    try:
+        interval = int(os.environ.get("BOT_INTERVAL_MINUTES") or cfg.settings.interval_minutes) * 60
+    except (TypeError, ValueError):
+        interval = 600
+    interval = max(60, interval)
     next_run = 0.0
+    tg_fails = 0       # failed getUpdates in a row (bad token, Telegram 5xx, 409 from a second instance)
+    cycle_fails = 0    # crashed cycles in a row
+    loops = 0
     log.info("daemon started, interval %ds", interval)
-    while True:
-        try:
-            cfg = load_config(args.config)  # pick up edits without restart
-        except Exception as e:
-            log.error("config error (keeping previous): %s", e)
-        engine = Engine(cfg, state, tg)
-        cp = CommandProcessor(engine, mode="daemon")
-        try:
-            cp.poll(timeout=20 if tg.enabled else 0)
-            state.save()
-            if cp.force_check or time.time() >= next_run:
-                summary = engine.run_cycle()
-                _print_summary(summary)
-                state.save()
-                next_run = time.time() + interval
-        except KeyboardInterrupt:
-            state.save()
-            return 0
-        except Exception:
-            traceback.print_exc()
-            state.save()
-            time.sleep(30)
-        if not tg.enabled:
-            time.sleep(max(1.0, min(30.0, next_run - time.time())))
+    try:
+        while max_loops is None or loops < max_loops:
+            loops += 1
+            try:
+                cfg = load_config(args.config)  # pick up edits without restart
+            except Exception as e:
+                log.error("config error (keeping previous): %s", e)
+            pause = 0.0
+            try:
+                engine = Engine(cfg, state, tg)
+                cp = CommandProcessor(engine, mode="daemon")
+                if tg.enabled:
+                    try:
+                        n = cp.poll(timeout=20)
+                    except Exception:
+                        traceback.print_exc()
+                        n = None
+                    if n is None:
+                        tg_fails += 1
+                        pause = poll_backoff(tg_fails)
+                        log.warning("telegram getUpdates failed %d time(s) in a row; next try in %.0fs",
+                                    tg_fails, pause)
+                    else:
+                        tg_fails = 0
+                    state.save_if_changed()
+                if cp.force_check or time.time() >= next_run:
+                    try:
+                        summary = engine.run_cycle()
+                        _print_summary(summary)
+                        cycle_fails = 0
+                        next_run = time.time() + interval
+                    except Exception:
+                        traceback.print_exc()
+                        cycle_fails += 1
+                        # never hammer the shops faster than the interval because a cycle keeps crashing
+                        next_run = time.time() + cycle_backoff(cycle_fails, interval)
+                        log.error("cycle crashed %d time(s) in a row; next try in %.0fs", cycle_fails,
+                                  next_run - time.time())
+                    state.save_if_changed()
+            except Exception:
+                traceback.print_exc()
+                state.save_if_changed()
+                pause = max(pause, 30.0)
+            if not tg.enabled:
+                pause = max(pause, min(30.0, next_run - time.time()), 1.0)
+            if pause > 0:
+                # do not oversleep the next cycle
+                sleep(max(1.0, min(pause, next_run - time.time())) if next_run > time.time() else 1.0)
+    except KeyboardInterrupt:
+        pass
+    state.save()
+    return 0
 
 
 def _store_instance(cls, cfg):
-    http = Http(timeout=cfg.settings.timeout, delay=max(cfg.settings.request_delay, cls.min_delay), proxy=proxy_for(cls.key),
-                extra_headers=cls.extra_headers or None, browser_key=cls.key)
-    return cls(http, max_pages=cfg.settings.max_pages)
+    return cls(http_for_store(cls, cfg.settings), max_pages=cfg.settings.max_pages)
 
 
 def cmd_search(args) -> int:

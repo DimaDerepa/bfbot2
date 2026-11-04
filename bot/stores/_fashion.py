@@ -77,6 +77,17 @@ def join_title(*parts: Any, sep: str = " ") -> str:
     return out
 
 
+def first_el(root, *selectors: str):
+    """First element matching the selectors in PRIORITY order (a CSS selector list returns document order)."""
+    if root is None:
+        return None
+    for sel in selectors:
+        el = root.select_one(sel)
+        if el is not None:
+            return el
+    return None
+
+
 def longest(*cands: Any) -> str:
     best = ""
     for c in cands:
@@ -248,6 +259,28 @@ def price_lines(lines: Iterable[Any]) -> dict[str, Any]:
     else:
         lowest = None
     return {"price": current, "original": original, "lowest": lowest, "price_from": price_from}
+
+
+def labeled_prices(texts: Iterable[Any]) -> tuple[Optional[float], Optional[float]]:
+    """(original, lowest_30_days) from texts that LABEL their amount ("PRP: 349,99 lei", "Cel mai mic preț din
+    ultimele 30 de zile: 299,99 lei"); unlabelled amounts are ignored."""
+    orig: list[float] = []
+    low: list[float] = []
+    for raw in texts:
+        line = norm(raw)
+        pos = 0
+        for m in PRICE_WITH_CURRENCY_RE.finditer(line):
+            ctx, pos = line[pos:m.start()], m.end()
+            if re.match(r"\s*/", line[m.end():m.end() + 6]):
+                continue
+            v = parse_price(m.group(0))
+            if not v:
+                continue
+            if _LOW30_RE.search(ctx):
+                low.append(v)
+            elif _ORIG_RE.search(ctx):
+                orig.append(v)
+    return (max(orig) if orig else None), (min(low) if low else None)
 
 
 def best_old(price: Optional[float], original: Optional[float], lowest: Optional[float]) -> Optional[float]:

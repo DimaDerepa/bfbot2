@@ -109,36 +109,46 @@ class Engine:
             if w.id in disabled:
                 w.enabled = False
             out.append(w)
-        taken = {w.id for w in out}
+        parsed: list[tuple[dict, Watch]] = []
         for d in self.state.tg_watches():
             try:
-                w = watch_from_dict({k: v for k, v in d.items() if k != "origin"}, origin="telegram")
+                parsed.append((d, watch_from_dict({k: v for k, v in d.items() if k != "origin"}, origin="telegram")))
             except (ValueError, TypeError) as e:
                 log.warning("bad telegram watch %s: %s", d, e)
-                continue
+        config_ids = {w.id for w in out}
+        reserved = config_ids | {w.id for _, w in parsed}
+        taken = set(config_ids)
+        for d, w in parsed:
             if w.id in taken:
-                w = self._rename_colliding(d, w, taken)
+                w = self._rename_colliding(d, w, reserved, from_config=w.id in config_ids)
             taken.add(w.id)
             out.append(w)
         return out
 
-    def _rename_colliding(self, d: dict, w: Watch, taken: set[str]) -> Watch:
-        """A config.yaml watch got the id of an older Telegram watch: give the Telegram one a new id
-        (same "-2" rule as /add) and move its history there, so both are monitored and reachable by /list."""
+    def _rename_colliding(self, d: dict, w: Watch, reserved: set[str], *, from_config: bool) -> Watch:
+        """Give a Telegram watch whose id is already used a new id (same "-2" rule as /add), stored in state.
+
+        from_config: a config.yaml watch got the id of an older Telegram watch. The history stored under that
+        id was made by the Telegram watch (/add never reuses a config id), so it moves along; the config watch
+        starts fresh and gets its first-run digest. Both are monitored and reachable by /list, /del, /set."""
         old = w.id
         base, n = old, 2
-        while w.id in taken:
+        while w.id in reserved:
             w.id = f"{base}-{n}"
             n += 1
+        reserved.add(w.id)
         d["id"] = w.id
-        self.state.rename_watch(old, w.id)   # the stored history was made by the Telegram watch
-        log.warning("watch id %r is used by config.yaml and by a Telegram watch; Telegram watch renamed to %r",
-                    old, w.id)
-        notices = self.state.data.setdefault("notices", [])
-        del notices[:-9]
-        notices.append(
-            f"ℹ️ В config.yaml появился пункт с тем же именем, что и добавленный через Telegram "
-            f"«{esc(w.name)}». Оба отслеживаются; у пункта из Telegram теперь id <code>{esc(w.id)}</code> (см. /list).")
+        if from_config:
+            self.state.rename_watch(old, w.id)
+            notices = self.state.data.setdefault("notices", [])
+            del notices[:-9]
+            notices.append(
+                f"ℹ️ В config.yaml появился пункт с тем же именем, что и добавленный через Telegram "
+                f"«{esc(w.name)}». Слежу за обоими; у пункта из Telegram теперь id <code>{esc(w.id)}</code> (см. /list).")
+        else:
+            self.state.forget_watch(w.id)   # duplicate Telegram entry: never inherit another watch's history
+        log.warning("watch id %r is used twice (%s); Telegram watch renamed to %r",
+                    old, "config.yaml and Telegram" if from_config else "two Telegram watches", w.id)
         return w
 
     def active_watches(self) -> list[Watch]:

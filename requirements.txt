@@ -3,3 +3,5 @@ beautifulsoup4>=4.12
 lxml>=5.0
 PyYAML>=6.0
 requests>=2.31
+# time-zone database for quiet hours on Windows and minimal images (no system zoneinfo there)
+tzdata>=2024.1

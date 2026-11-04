@@ -28,7 +28,7 @@ from bs4 import Tag
 from ..models import Offer
 from .base import Store
 from ._fashion import (
-    NextPager, clean_url, current_price, dedupe, higher_money_in, image_of, join_title, landed_on_home, norm, num,
+    NextPager, clean_url, current_price, dedupe, first_el, higher_money_in, image_of, join_title, landed_on_home, norm, num,
     old_price_in, outermost, pick_price, raise_if_challenge, stock_from_text, text_of,
 )
 
@@ -94,9 +94,9 @@ class FashionDaysStore(NextPager, Store):
         name = norm(gtm.get("data-gtm-name")) or norm(gtm.get("title"))
         brand = norm(gtm.get("data-gtm-brand-name"))
         if not name:
-            name = text_of(c.select_one(".product-card-title, .product-card-name, [class*='title'], [class*='name']"))
+            name = text_of(first_el(c, ".product-card-title", ".product-card-name", "[class*='title']"))
         if not brand:
-            brand = text_of(c.select_one(".product-card-brand, [class*='brand']"))
+            brand = text_of(first_el(c, ".product-card-brand", "[class*='brand']"))
         if not name:
             img = c.select_one("img[alt]")
             name = norm(img.get("alt")) if img is not None else ""
