@@ -4,7 +4,8 @@
 $ErrorActionPreference = "Stop"
 $Repo = "DimaDerepa/bfbot2"
 
-Write-Host "`n[1/4] Git..." -ForegroundColor Cyan
+Write-Host "`n[1/4] Python and Git (for all users, so the runner service can use them)..." -ForegroundColor Cyan
+winget install -e --id Python.Python.3.12 --scope machine --silent --accept-package-agreements --accept-source-agreements
 if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
     winget install -e --id Git.Git --scope machine --silent --accept-package-agreements --accept-source-agreements
 } else { Write-Host "Git already installed" }

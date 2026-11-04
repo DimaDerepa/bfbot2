@@ -40,6 +40,8 @@ jobs:
       # e.g. during a GitHub hiccup: an empty state must never be pushed over the real one.
       - name: Load state
         id: load
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           bash scripts/load_state.sh state.json
           python -m bot.statesync load state-home state-home.json || true

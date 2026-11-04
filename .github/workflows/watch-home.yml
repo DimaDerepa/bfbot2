@@ -1,9 +1,13 @@
 name: watch-home
 
 # Runs on YOUR computer (GitHub self-hosted runner) with a Romanian home IP, for the shops that block
-# GitHub's cloud (eMAG, PC Garage, evoMAG, CEL, compari.ro, ...). Enable it by creating the repository
-# variable HOME_RUNNER = true after installing the runner (see README). If the computer is off, the cloud
-# job keeps working for the other shops and these checks simply resume when it is back.
+# GitHub's cloud (eMAG, PC Garage, evoMAG, CEL, Flanco, compari.ro, ...). Enabled by the repository variable
+# HOME_RUNNER = true. Each run starts the next one ~10 minutes later; if the computer is off, the chain
+# resumes on the next schedule tick after it is back.
+#
+# No PowerShell is used (Windows blocks .ps1 scripts by default): every step runs through Python.
+# Windows needs Python installed for all users (scripts/setup-home-windows.ps1 does it);
+# macOS / Linux get Python from actions/setup-python.
 on:
   schedule:
     - cron: "6-59/10 * * * *"
@@ -11,34 +15,49 @@ on:
 
 concurrency:
   group: watch-home
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 permissions:
   contents: write
+  actions: write
 
 jobs:
   home:
     if: ${{ vars.HOME_RUNNER == 'true' }}
     runs-on: self-hosted
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
+      - name: Check Python (Windows)
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: |
+          where python || (echo Python is not installed for all users. Run in an Administrator PowerShell: winget install -e --id Python.Python.3.12 --scope machine   and restart the computer. & exit /b 1)
+          python --version
+
       - uses: actions/checkout@v4
 
-      # Python is installed by GitHub on the first run (no manual install on your computer needed)
       - uses: actions/setup-python@v5
+        if: runner.os != 'Windows'
         with:
           python-version: "3.12"
 
       - name: Install
-        run: python -m pip install --disable-pip-version-check -q -r requirements.txt
+        shell: python {0}
+        run: |
+          import subprocess, sys
+          sys.exit(subprocess.call([sys.executable, "-m", "pip", "install", "--disable-pip-version-check", "-q", "-r", "requirements.txt"]))
 
       - name: Load state
-        run: python -m bot.statesync load state state.json
-
-      - name: Load home state
-        run: python -m bot.statesync load state-home state-home.json
+        shell: python {0}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          import subprocess, sys
+          sys.exit(subprocess.call([sys.executable, "-m", "bot.statesync", "load", "state", "state.json"])
+                   or subprocess.call([sys.executable, "-m", "bot.statesync", "load", "state-home", "state-home.json"]))
 
       - name: Check prices (home shops)
+        shell: python {0}
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -46,10 +65,27 @@ jobs:
           BOT_AI_MODEL: ${{ vars.BOT_AI_MODEL }}
           BOT_AI_CLASSIFY_MODEL: ${{ vars.BOT_AI_CLASSIFY_MODEL }}
           BOT_MODE: home
-        run: python -m bot run --state state.json
+        run: |
+          import subprocess, sys
+          sys.exit(subprocess.call([sys.executable, "-m", "bot", "run", "--state", "state.json"]))
 
       - name: Save state
         if: always()
+        shell: python {0}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: python -m bot.statesync save state-home state-home.json
+        run: |
+          import os, subprocess, sys
+          if not os.path.exists("state-home.json"):
+              sys.exit(0)
+          sys.exit(subprocess.call([sys.executable, "-m", "bot.statesync", "save", "state-home", "state-home.json"]))
+
+      # keep checking every ~10 minutes while the computer is on (GitHub's schedule is often hours late)
+      - name: Start the next run
+        if: always() && vars.BOT_CONTINUOUS != 'false'
+        shell: python {0}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          import subprocess, sys
+          subprocess.call([sys.executable, "-m", "bot.statesync", "next", "watch-home.yml", "480"])
