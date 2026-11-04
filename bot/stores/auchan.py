@@ -7,7 +7,8 @@ Search (primary, VTEX Intelligent Search, no auth):
   sellers[].{sellerName, sellerDefault, commertialOffer.{Price, ListPrice, PriceWithoutDiscount,
   AvailableQuantity, IsAvailable}}}; recordsFiltered = total.
   Weight-sold goods (measurementUnit kg/l): Price is per kg/l, package price = Price * unitMultiplier.
-Fallback: VTEX legacy /api/catalog_system/pub/products/search?ft= (VtexStore) when IS errors out.
+Fallback: VTEX legacy /api/catalog_system/pub/products/search?ft=&_from=&_to= when IS errors out or answers an
+  unexpected shape; it returns the same product objects, parsed with the same rules (kg/l multiplier, seller, image).
 Product page: /api/catalog_system/pub/products/search/{linkText}/p, then JSON-LD.
 Verified against alexandruiftimi-ns/StorePriceTracker (stores/auchan.py, Sep 2026). No blocking reported.
 """
@@ -66,10 +67,22 @@ class AuchanStore(VtexStore):
             data = None
         products = data.get("products") if isinstance(data, dict) else None
         if not isinstance(products, list):
-            out = super().search_page(query, page)   # legacy catalog_system search
+            # legacy catalog_system search: same product objects (a JSON array), parsed with the same rules
+            # (kg/l unit multiplier, seller, image, clean URL) as Intelligent Search
+            frm = (page - 1) * self.page_size
+            legacy = self.get_json(f"{self.base_url}/api/catalog_system/pub/products/search", headers=self._headers,
+                                   params={"ft": query.strip(), "_from": str(frm), "_to": str(frm + self.page_size - 1)})
+            products = legacy if isinstance(legacy, list) else []
             self.last_strategy = "vtex-legacy"
-            self._last_page = len(out) < self.page_size
-            return out
+            self._last_page = len(products) < self.page_size
+            return self._offers(products)
+        self.last_strategy = "vtex-intelligent-search"
+        total = data.get("recordsFiltered")
+        self._last_page = len(products) < self.page_size or (
+            isinstance(total, int) and page * self.page_size >= total)
+        return self._offers(products)
+
+    def _offers(self, products: list) -> list[Offer]:
         out: list[Offer] = []
         seen: set[str] = set()
         for p in products:
@@ -77,10 +90,6 @@ class AuchanStore(VtexStore):
             if o is not None and o.key not in seen:
                 seen.add(o.key)
                 out.append(o)
-        self.last_strategy = "vtex-intelligent-search"
-        total = data.get("recordsFiltered")
-        self._last_page = len(products) < self.page_size or (
-            isinstance(total, int) and page * self.page_size >= total)
         return out
 
     # ------------------------------------------------------------------ parsing
@@ -95,7 +104,9 @@ class AuchanStore(VtexStore):
             for s in item.get("sellers") or []:
                 if not isinstance(s, dict):
                     continue
-                co = s.get("commertialOffer") or {}
+                co = s.get("commertialOffer")
+                if not isinstance(co, dict):
+                    continue
                 price = parse_price(co.get("Price"))
                 if not price:
                     continue
@@ -124,11 +135,13 @@ class AuchanStore(VtexStore):
         elif isinstance(link, str) and link.startswith("/"):
             url = clean_url(self.base_url + link, self.base_url)
         elif p.get("linkText"):
-            url = f"{self.base_url}/{p['linkText']}/p"
+            url = f"{self.base_url}/{quote(str(p['linkText']).strip('/'), safe='-_.')}/p"
         else:
             return None
         images = item.get("images") or []
         image = images[0].get("imageUrl") if images and isinstance(images[0], dict) else None
+        if not isinstance(image, str) or not image.startswith("http"):
+            image = None
         sname = seller.get("sellerName")
         if not isinstance(sname, str) or not sname.strip() or "auchan" in sname.lower():
             sname = None

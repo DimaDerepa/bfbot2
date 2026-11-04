@@ -12,6 +12,8 @@ Cards (REAL markup captured 2026-10-28, 36 per page):  #products-list article.pr
     div.availability.instock ("in stoc suficient" / "in stoc limitat") | .insupplierstock ("in stoc
         depozit/furnizor") | out of stock never observed (guess: .outofstock / "epuizat"/"indisponibil")
   No schema.org JSON-LD on listings. URL https://www.itgalaxy.ro/<cat>/<brand>/<slug>-<id>/.
+Product page: span#price-<id> / button[data-prod=<id>][data-pprice] of THIS product first (related products sit on
+  the same page), generic JSON-LD/microdata of the same response only when those are absent.
 Anti-bot: nothing documented (bf-price-monitor ran from a residential IP); Cloudflare markers are checked.
 """
 from __future__ import annotations
@@ -21,13 +23,13 @@ from typing import Optional
 
 from bs4 import Tag
 
-from ..extract import make_soup
+from ..extract import extract_product_page, make_soup
 from ..models import Offer
 from ..prices import parse_price
 from .base import Store
 from ._itshops import (
-    PagerMixin, clean_url, current_price, dedupe, image_of, longest, next_page_url, num_attr, old_price_in,
-    outermost, pdp_offer, pdp_title, raise_if_challenge, stock_of_el,
+    ShopMixin, clean_url, current_price, dedupe, enrich_pdp, image_of, landed_on_home, longest, next_page_url,
+    num_attr, old_price_in, outermost, pdp_offer, pdp_title, pick_price, raise_if_challenge, stock_of_el,
 )
 
 _URL_ID_RE = re.compile(r"-(\d{3,})/?$")
@@ -39,14 +41,14 @@ def _url_id(url: str) -> Optional[str]:
     return m.group(1) if m else None
 
 
-class ItGalaxyStore(PagerMixin, Store):
+class ItGalaxyStore(ShopMixin, Store):
     key = "itgalaxy"
     name = "ITGalaxy"
     base_url = "https://www.itgalaxy.ro"
     domains = ("itgalaxy.ro",)
     categories = ("pc", "electronics")
     page_size = 36
-    min_delay = 4.0          # bf-price-monitor keeps ~5 s between requests to this domain
+    min_delay = 5.0          # bf-price-monitor keeps ~5 s between requests to this domain
     extra_headers = {"Referer": "https://www.itgalaxy.ro/", "Upgrade-Insecure-Requests": "1"}
 
     def search_url(self, query: str) -> str:
@@ -61,6 +63,10 @@ class ItGalaxyStore(PagerMixin, Store):
             if not url:
                 return []
         html, soup, final = self.get_html(url)
+        if landed_on_home(url, final):
+            raise_if_challenge(html, soup, final)
+            self.last_strategy = "redirect:home"     # home-page promotions are not search results
+            return []
         root = soup.select_one("#products-list") or soup
         cards = outermost(root.select("article.product-box"))
         out = dedupe(self._card(c, final) for c in cards)
@@ -82,10 +88,11 @@ class ItGalaxyStore(PagerMixin, Store):
         title = longest(a.get_text(" ", strip=True), btn.get("data-pname") if btn is not None else "", a.get("title"))
         if not url or not title:
             return None
-        price_el = c.select_one('span[id^="price-"]') or c.select_one(".info.price span") or c.select_one(".price")
-        price = current_price(price_el)
-        if not price and price_el is not None and price_el.get("aria-label"):
-            price = current_price_label(price_el.get("aria-label"))
+        price_el, price = pick_price(c, 'span[id^="price-"]', ".info.price span", ".price")
+        if not price:
+            labelled = c.select_one('span[id^="price-"][aria-label]')
+            if labelled is not None:
+                price_el, price = labelled, current_price_label(labelled.get("aria-label"))
         if not price and btn is not None:
             price = num_attr(btn.get("data-pprice"))
         if not price:
@@ -99,7 +106,8 @@ class ItGalaxyStore(PagerMixin, Store):
             pid = btn["data-prod"]
         else:
             form = c.select_one("form[id^='add_main_product_'], form[action*='adaugaincos-']")
-            m = _FORM_ID_RE.search((form.get("id") or "") + " " + (form.get("action") or "")) if form is not None else None
+            ref = f"{form.get('id') or ''} {form.get('action') or ''}" if form is not None else ""
+            m = _FORM_ID_RE.search(ref)
             pid = m.group(1) if m else _url_id(url)
         return Offer(
             store=self.key, title=title, url=url, price=price, old_price=old if old and old > price else None,
@@ -108,29 +116,39 @@ class ItGalaxyStore(PagerMixin, Store):
         )
 
     def product(self, url: str) -> Optional[Offer]:
-        o = super().product(url)
+        """Product page. The page also lists related products, so the markup tagged with THIS product's id
+        (span#price-<id> / button[data-prod=<id>][data-pprice], verified on listings 2026-10-28) is read first;
+        generic JSON-LD/microdata (no JSON-LD on listings; product pages unverified) only when that is absent -
+        otherwise a related product's microdata could become the watched product's price."""
+        resp = self.http.get(url)
+        raw = resp.text or ""
+        self.last_raw = raw
+        soup = make_soup(raw)
         pid = _url_id(url)
-        if o is not None:
-            o.offer_id = pid or o.offer_id
-            return o
-        if not self.last_raw:
-            return None
-        soup = make_soup(self.last_raw)
-        raise_if_challenge(self.last_raw, soup, url)
-        if not pid:
-            return None
-        # the page also lists related products: only read elements carrying this product's id
-        o = pdp_offer(self, soup, url, price_sels=(f'span[id="price-{pid}"]',), stock_sels=(".availability",),
-                      offer_id=pid, source="itgalaxy-pdp")
-        if o is None:
+        o: Optional[Offer] = None
+        if pid:
+            o = pdp_offer(self, soup, url, price_sels=(f'span[id="price-{pid}"]',), stock_sels=(".availability",),
+                          offer_id=pid, source="itgalaxy-pdp")
             btn = soup.select_one(f'button[data-prod="{pid}"][data-pprice]')
-            price = num_attr(btn.get("data-pprice")) if btn is not None else None
-            title = pdp_title(soup) or (btn.get("data-pname") if btn is not None else "")
-            if price and title:
-                o = Offer(store=self.key, title=title, url=url, price=price, offer_id=pid,
-                          in_stock=stock_of_el(soup.select_one(".availability")), store_name=self.name,
-                          source="itgalaxy-pdp")
-        return o
+            if o is None and btn is not None:
+                price = num_attr(btn.get("data-pprice"))
+                title = pdp_title(soup) or str(btn.get("data-pname") or "")
+                if price and title:
+                    o = Offer(store=self.key, title=title, url=url, price=price, offer_id=pid,
+                              in_stock=stock_of_el(soup.select_one(".availability")), store_name=self.name,
+                              source="itgalaxy-pdp")
+            if o is not None:
+                if btn is not None and btn.get("data-pname") and len(str(btn["data-pname"])) > len(o.title):
+                    o.title = " ".join(str(btn["data-pname"]).split())
+                return o
+        o = extract_product_page(raw, resp.url, self.key)     # same page, no second request
+        if o is not None:
+            o.url = url
+            o.store_name = self.name
+            o.offer_id = pid or o.offer_id
+            return enrich_pdp(o, soup, stock_sels=(".availability",))
+        raise_if_challenge(raw, soup, url)
+        return None
 
 
 def current_price_label(label: Optional[str]) -> Optional[float]:

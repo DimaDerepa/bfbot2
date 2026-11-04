@@ -11,12 +11,14 @@ Response: searchResultPage.products.main.{max, items[]}; items[].product may be 
   pipUrl (absolute), mainImageUrl.  previous = old price, only on "new lower price" items.
   No stock in this payload (in_stock stays None).
 Under heavy rates SIK reportedly returns empty results before any 429 -> min_delay 4 s.
-Product page: SIK lookup by the item number in the URL, then JSON-LD / .pip-price__integer.
+Product page (ikea.com/ro/... only; other countries are priced in other currencies -> None): SIK lookup by the
+item number in the URL (.../{slug}-{itemNo}/, ...-s{itemNo}/ or /p/{itemNo}/), then JSON-LD / .pip-price__integer.
 """
 from __future__ import annotations
 
 import re
 from typing import Any, Optional
+from urllib.parse import urlsplit
 
 from ..extract import make_soup
 from ..models import Offer
@@ -25,7 +27,8 @@ from ._ro_retail import clean_url, norm_text
 from .base import Store
 
 SIK_URL = "https://sik.search.blue.cdtapps.com/ro/ro/search-result-page"
-_ITEMNO_RE = re.compile(r"-s?(\d{8})/?$")
+# .../p/billy-biblioteca-alb-00263850/, .../p/...-s59182201/ (SPR combination), .../p/00263850/ (short form)
+_ITEMNO_RE = re.compile(r"[-/]s?(\d{8})/?$")
 
 
 def _dig(d: Any, *path: str) -> Any:
@@ -128,7 +131,12 @@ class IkeaStore(Store):
 
     # ------------------------------------------------------------------ product page
     def product(self, url: str) -> Optional[Offer]:
-        m = _ITEMNO_RE.search(clean_url(url, "https://www.ikea.com/"))
+        clean = clean_url(url, "https://www.ikea.com/")
+        if not urlsplit(clean).path.startswith("/ro/"):
+            # ikea.com/de/... etc.: other currency; the RO SIK index or a meta/PIP price would be read as lei
+            self.last_strategy = "not-ro"
+            return None
+        m = _ITEMNO_RE.search(clean)
         if m:
             item_no = m.group(1)
             try:

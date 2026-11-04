@@ -27,18 +27,18 @@ from typing import Optional
 
 from bs4 import BeautifulSoup, Tag
 
-from ..extract import make_soup
+from ..extract import extract_product_page, make_soup
 from ..models import Offer
 from .base import Store
 from ._itshops import (
-    PagerMixin, clean_url, current_price, dedupe, image_of, longest, next_page_url, old_price_in, other_higher_price,
-    outermost, pdp_offer, raise_if_challenge, stock_of_el,
+    ShopMixin, clean_url, dedupe, image_of, landed_on_home, longest, next_page_url, old_price_in,
+    other_higher_price, outermost, pdp_offer, pick_price, raise_if_challenge, stock_of_el,
 )
 
 _CART_ID_RE = re.compile(r"adaugaincos-(\d+)")
 
 
-class PcGarageStore(PagerMixin, Store):
+class PcGarageStore(ShopMixin, Store):
     key = "pcgarage"
     name = "PC Garage"
     base_url = "https://www.pcgarage.ro"
@@ -60,6 +60,10 @@ class PcGarageStore(PagerMixin, Store):
             if not url:
                 return []
         html, soup, final = self.get_html(url)
+        if landed_on_home(url, final):
+            raise_if_challenge(html, soup, final)
+            self.last_strategy = "redirect:home"     # home-page promotions are not search results
+            return []
         cards = outermost(soup.select("div.product_box"))
         out = dedupe(self._card(c, final) for c in cards)
         if out:
@@ -83,9 +87,7 @@ class PcGarageStore(PagerMixin, Store):
         if not url or not title:
             return None
         container = c.select_one(".product_box_price_container") or c
-        price_el = (container.select_one(".pb-price p.price") or container.select_one("p.price")
-                    or container.select_one(".price") or container.select_one(".pb-price"))
-        price = current_price(price_el)
+        price_el, price = pick_price(container, ".pb-price p.price", "p.price", ".price", ".pb-price")
         if not price:
             return None
         old = old_price_in(container, price, exclude=[price_el]) or other_higher_price(container, price_el, price)
@@ -108,16 +110,20 @@ class PcGarageStore(PagerMixin, Store):
 
     # ------------------------------------------------------------------ product page
     def product(self, url: str) -> Optional[Offer]:
-        o = super().product(url)
-        if o is not None or not self.last_raw:
-            return o
-        soup: BeautifulSoup = make_soup(self.last_raw)
-        raise_if_challenge(self.last_raw, soup, url)
+        resp = self.http.get(url)
+        self.last_raw = resp.text
+        soup: BeautifulSoup = make_soup(resp.text)
         for el in soup.select("#pe_unsealed"):
-            el.decompose()  # resealed (desigilat) offers have their own, lower price
-        return pdp_offer(self, soup, url, price_sels=('meta[itemprop="price"]', ".ps_sell_price .price_num",
-                                                       ".ps_sell_price"),
-                         old_sels=(".ps_old_price", ".ps_prp_price", ".old_price", "del"),
-                         stock_sels=(".product_availability", ".ps_availability", "[class*='availability']"),
-                         title_sels=("h1#product_name", "h1"), source="pcgarage-pdp")
-
+            el.extract()  # resealed (desigilat) offers have their own, lower price
+        o = pdp_offer(self, soup, url, price_sels=('meta[itemprop="price"]', ".ps_sell_price .price_num"),
+                      old_sels=(".ps_old_price", ".ps_prp_price", ".old_price"),
+                      stock_sels=(".product_availability", ".ps_availability"),
+                      title_sels=("h1#product_name", "h1"), source="pcgarage-pdp")
+        if o is not None:
+            return o
+        raise_if_challenge(resp.text, soup, url)
+        o = extract_product_page(str(soup), resp.url, self.key)
+        if o is not None:
+            o.url = url
+            o.store_name = self.name
+        return o

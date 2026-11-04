@@ -14,7 +14,9 @@ Not a store module: the leading underscore keeps it out of the registry scan.
                     (PC Garage and Flanco load it on every normal page), nor is an in-page Turnstile widget.
 * `next_page_url`   the pager's "next" link (search pagination is undocumented for these shops, so it is
                     never built from a template).
-* `PagerMixin`      page 1 builds the search URL, page N>1 follows the next link remembered from page N-1.
+* `landed_on_home`  a search request redirected to the bare site root -> home-page promotions, not results.
+* `ShopMixin`       page 1 builds the search URL, page N>1 follows the next link remembered from page N-1;
+                    URLs of generic-fallback offers are cleaned like the card parsers' ones.
 """
 from __future__ import annotations
 
@@ -119,11 +121,27 @@ def is_old_el(el) -> bool:
     return any(_OLD_TOKEN.search(c) for c in (el.get("class") or []))
 
 
+_PERCENT_ONLY = re.compile(r"^[-–−]?\s*\d+(?:[.,]\d+)?\s*%$")
+
+
+def _is_noise(child: Tag) -> bool:
+    """Sub-element of a price box that is not the price: instalment / saving / shipping line, or a "-12%" badge.
+    Only the innermost such element counts, so a wrapper that also holds the real price is kept."""
+    t = text_of(child)
+    if not t:
+        return False
+    if _PERCENT_ONLY.match(t):
+        return True
+    if not NOT_PRICE_CONTEXT.search(t):
+        return False
+    return not any(NOT_PRICE_CONTEXT.search(text_of(g)) for g in child.find_all(True))
+
+
 def _strip_old(el: Tag) -> Tag:
     el = copy.copy(el)
-    for child in el.find_all(True):
-        if is_old_el(child):
-            child.decompose()
+    drop = [child for child in el.find_all(True) if is_old_el(child) or _is_noise(child)]
+    for child in drop:       # collected first: nested elements leave together with their parent
+        child.extract()
     return el
 
 
@@ -149,8 +167,13 @@ def price_text(el) -> str:
     return _GLUE_RE.sub(r"\1\2\3", norm(el.get_text(" ", strip=True)))
 
 
+_THOUSANDS_ONLY = re.compile(r"^\s*\d{1,3}\.\d{3}\s*$")
+
+
 def el_price(el) -> Optional[float]:
-    """Price of an element: machine attributes first (plain decimals), then visible text."""
+    """Price of an element: machine attributes first (plain decimals), then visible text.
+    An attribute like content="1.016" is ambiguous (1.016 vs 1016); when the visible text of the same element
+    says 1016 the text wins (CEL renders <span class="price" content="...">1016</span>)."""
     if el is None or not isinstance(el, Tag):
         return None
     for attr in _PRICE_ATTRS:
@@ -158,15 +181,46 @@ def el_price(el) -> Optional[float]:
         if v:
             p = num_attr(v)
             if p:
+                if _THOUSANDS_ONLY.match(str(v)):
+                    t = parse_price(price_text(el))
+                    if t and abs(t - p * 1000) < 1:
+                        return t
                 return p
     return parse_price(price_text(el))
 
 
 def current_price(el) -> Optional[float]:
-    """Price of `el` (attributes, <sup> decimals) ignoring struck/old children."""
+    """Price of `el` (attributes, <sup> decimals) ignoring struck/old children and instalment / saving /
+    percentage sub-elements ("sau 125 Lei / luna", "Economisesti 500 RON", "-12%")."""
     if el is None or not isinstance(el, Tag):
         return None
     return el_price(_strip_old(el))
+
+
+def pick_price(root: Optional[Tag], *selectors: str) -> tuple[Optional[Tag], Optional[float]]:
+    """First (element, price) over `selectors` in priority order whose element is not a struck/old price and
+    actually yields a price - an empty or struck-only first candidate does not end the search."""
+    if root is None:
+        return None, None
+    for sel in selectors:
+        for el in root.select(sel):
+            if is_old_el(el) or _old_ancestor(el, root):
+                continue
+            p = current_price(el)
+            if p:
+                return el, p
+    return None, None
+
+
+def first_current(root: Optional[Tag], *selectors: str) -> Optional[Tag]:
+    """First element matching the selectors (in priority order) that is not a struck/old price."""
+    if root is None:
+        return None
+    for sel in selectors:
+        for el in root.select(sel):
+            if not is_old_el(el) and not _old_ancestor(el, root):
+                return el
+    return None
 
 
 def within(el, anc) -> bool:
@@ -186,7 +240,9 @@ def _old_ancestor(el: Tag, stop: Tag) -> bool:
 
 
 def old_price_in(card: Optional[Tag], price: Optional[float], exclude: Iterable[Tag] = ()) -> Optional[float]:
-    """Highest list/struck price inside `card` that is greater than `price`."""
+    """Highest list/struck price inside `card` that is greater than `price`.
+    `exclude` = the current-price element(s): an old-marked element that IS one or CONTAINS one is skipped, but a
+    struck price nested inside the current-price element ("<p class=price><s>3.599</s> 3.299 RON</p>") counts."""
     if card is None or not price:
         return None
     excl = [e for e in exclude if e is not None]
@@ -194,7 +250,7 @@ def old_price_in(card: Optional[Tag], price: Optional[float], exclude: Iterable[
     for el in card.find_all(True):
         if not is_old_el(el):
             continue
-        if any(within(el, e) or within(e, el) for e in excl):
+        if any(within(e, el) for e in excl):
             continue
         if _old_ancestor(el, card):
             continue  # nested inside an old element already handled
@@ -227,7 +283,8 @@ def other_higher_price(container: Optional[Tag], price_el: Optional[Tag], price:
 # --------------------------------------------------------------------------- stock
 
 _OUT_CLS = re.compile(r"out_?of_?stock|out[-_]stoc|no[-_]stoc|epuizat|indisponibil|unavailable|sold[-_]?out", re.I)
-_IN_CLS = re.compile(r"instock|in[-_]stock|in[-_]stoc|instoc|insupplierstock|supplier|limited[-_]?stock|disponibil", re.I)
+_IN_CLS = re.compile(
+    r"instock|in[-_]stock|in[-_]stoc|instoc|insupplierstock|supplier|limited[-_]?stock|disponibil", re.I)
 _OUT_TXT = re.compile(
     r"stoc\s+epuizat|\bepuizat|indisponibil|nu\s+(?:este|e)\s+(?:[iî]n\s+)?stoc|nu\s+este\s+disponibil|"
     r"f[aă]r[aă]\s+stoc|out\s+of\s+stock|stoc\s*:\s*0\b",
@@ -290,17 +347,23 @@ def raise_if_challenge(html: str, soup: Optional[BeautifulSoup], url: str) -> No
 
 # --------------------------------------------------------------------------- pagination
 
-_NEXT_TEXT = re.compile(r"^(?:»|›|>|>>|→|urm[aă]toarea|urm[aă]toare|inainte|înainte|next|pagina\s+urm[aă]toare)$", re.I)
+_NEXT_TEXT = re.compile(
+    r"^(?:»|›|>|>>|→|urm[aă]toarea|urm[aă]toare|inainte|înainte|next|pagina\s+urm[aă]toare)$", re.I)
 _PAGER_SEL = (
     "ul.pagination, .pagination, .pager, .paginare, [class*='paginat'], nav[role='navigation'], "
-    "[role='navigation'], .lr-pagination"
+    "[role='navigation'], .lr-pagination, .pageresults"
 )
 
 
 def next_page_url(soup: BeautifulSoup, base: str, page: int, extra_selectors: Iterable[str] = ()) -> Optional[str]:
-    """URL of page `page + 1` taken from the pager (rel=next, '»' / 'Urmatoarea', or page-number links)."""
+    """URL of page `page + 1` taken from the pager.
+
+    Order: rel=next, then the link whose text is exactly the next page number (unambiguous), then
+    '›' / 'Urmatoarea' / class "next" (">>" / "»" are "last page" on some pagers, e.g. CEL's `a.last`, so
+    they only count when no numbered link exists), then page-number patterns in hrefs, then `extra_selectors`."""
     if soup is None:
         return None
+
     def ok(href: Optional[str]) -> Optional[str]:
         h = (href or "").strip()
         if not h or h.startswith(("#", "javascript:")):
@@ -322,6 +385,12 @@ def next_page_url(soup: BeautifulSoup, base: str, page: int, extra_selectors: It
     pagers = soup.select(_PAGER_SEL)
     for pager in pagers:
         for a in pager.select("a[href]"):
+            if text_of(a) == str(nxt):
+                u = ok(a.get("href"))
+                if u:
+                    return u
+    for pager in pagers:
+        for a in pager.select("a[href]"):
             txt = text_of(a)
             cls = " ".join(a.get("class") or []).lower()
             title = (a.get("title") or a.get("aria-label") or "").strip()
@@ -330,7 +399,7 @@ def next_page_url(soup: BeautifulSoup, base: str, page: int, extra_selectors: It
                 if u:
                     return u
         for a in pager.select("a[href]"):
-            if text_of(a) == str(nxt) or num_re.search(a.get("href") or ""):
+            if num_re.search(a.get("href") or ""):
                 u = ok(a.get("href"))
                 if u:
                     return u
@@ -342,8 +411,28 @@ def next_page_url(soup: BeautifulSoup, base: str, page: int, extra_selectors: It
     return None
 
 
-class PagerMixin:
-    """Remembers the pager's next link so that page N+1 is fetched only when the shop offers one."""
+def landed_on_home(requested: str, final: str) -> bool:
+    """The search request was redirected to the site root (no query left): the page is the home page, whose
+    promotion cards must not be reported as search results."""
+    try:
+        req, fin = urlsplit(requested), urlsplit(final)
+    except ValueError:
+        return False
+    if fin.path not in ("", "/") or fin.query:
+        return False
+    return req.path not in ("", "/") or bool(req.query)
+
+
+class ShopMixin:
+    """Mixed in before `Store`:
+    * remembers the pager's next link so that page N+1 is fetched only when the shop offers one;
+    * generic-fallback offers get the same URL hygiene as the card parsers (no tracking query / fragment)."""
+
+    def fallback(self, html: str, url: str, soup: Optional[BeautifulSoup] = None) -> list:
+        offers = super().fallback(html, url, soup)  # type: ignore[misc]
+        for o in offers:
+            o.url = clean_url(o.url, url) or o.url
+        return dedupe(offers)
 
     def _pager_reset(self) -> None:
         self._next_urls: dict[int, str] = {}
@@ -406,9 +495,36 @@ def pdp_offer(store, soup: BeautifulSoup, url: str, *, price_sels: Iterable[str]
         stock = stock_of_el(soup.select_one(sel))
         if stock is not None:
             break
+    if stock is None:
+        from ..extract import availability_flag
+
+        av = soup.find(attrs={"itemprop": "availability"}) or soup.find(
+            "meta", attrs={"property": re.compile(r"^(?:product|og):availability$")})
+        if av is not None:
+            stock = availability_flag(av.get("href") or av.get("content") or av.get_text())
     old = pdp_old_price(soup, price, old_sels)
     return Offer(store=store.key, title=title, url=url, price=price, old_price=old, in_stock=stock,
                  offer_id=offer_id, store_name=store.name, source=source)
+
+
+def enrich_pdp(o, soup: Optional[BeautifulSoup], *, title_sels: Iterable[str] = ("h1",),
+               stock_sels: Iterable[str] = (), old_sels: Iterable[str] = ()):
+    """Fill what the generic product-page extraction leaves weak: the title of a bare "meta" hit (which may be
+    the URL or the <title> with the shop name), unknown stock, missing old price."""
+    if o is None or soup is None:
+        return o
+    if o.source == "meta" or not o.title or o.title == o.url:
+        t = pdp_title(soup, title_sels)
+        if t:
+            o.title = t
+    if o.in_stock is None:
+        for sel in stock_sels:
+            o.in_stock = stock_of_el(soup.select_one(sel))
+            if o.in_stock is not None:
+                break
+    if not o.old_price and o.price:
+        o.old_price = pdp_old_price(soup, o.price, old_sels)
+    return o
 
 
 # --------------------------------------------------------------------------- misc

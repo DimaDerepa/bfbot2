@@ -6,17 +6,22 @@ No verified selectors, so parsing is layered:
   1. schema.org JSON-LD ItemList / Product (if the page has it)
   2. product anchors: own catalog /produse/{cat-slug}/{catId}/{slug}/{productId}
      or marketplace /produse/{slug}-{id}.html (older links use /products/), grouped into their card;
-     price = first "829,00 lei" in the card that is not struck/old and not a per-l/kg/mp unit price
-     ("829,00 lei / unitate TVA inclus" is the main price); old price from <del>/<s>/class*=old.
+     (grouped by product id, so "/produse/.../57358" and "https://leroymerlin.ro/produse/.../57358/" are one card,
+     URL = https://www.leroymerlin.ro{path});
+     price = first "829,00 lei" in the card (title text excluded) that is not struck/old, not an instalment /
+     savings amount and not a per-l/kg/mp unit price unless that is the only price (goods sold per mp);
+     "829,00 lei / unitate TVA inclus" is the main price; old price from <del>/<s>/class*=old.
      "Indisponibil" = out of stock; marketplace "Vandut de X" -> seller.
+     "0 rezultate pentru: {q}" is checked first: product cards on such a page are recommendations.
   3. generic extraction.
 Anti-bot: sister sites (FR/IT/PT) use DataDome -> captcha-delivery.com page / 403 -> BlockedError.
 """
 from __future__ import annotations
 
+import copy
 import re
 from typing import Optional
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import urlsplit
 
 from bs4 import Tag
 
@@ -30,7 +35,11 @@ from .base import Store
 _OWN_RE = re.compile(r"^/(?:produse|products)/[^/]+/\d+/[^/]+/(\d+)/?$")
 _MKP_RE = re.compile(r"^/(?:produse|products)/[^/]+-(\d{5,})\.html$")
 _UNIT_AFTER_RE = re.compile(r"^\s*/\s*(?:l|kg|g|mp|m2|m²|ml|m|mc|m3|litru|metru|kilogram)\b", re.I)
-_NOT_PRICE_RE = re.compile(r"(rate|/\s*lun|lunar|economis|cashback|voucher|transport|livrare|reducere de)", re.I)
+# instalments / savings / delivery amounts next to a price (whole words: "decorate", "depozitare" are not "rate")
+_NOT_PRICE_RE = re.compile(
+    r"(?<![a-zăâîșşțţ])(?:rate|rat[ăa]|lunar|economis\w*|cashback|voucher|transport|livrare|reducere\s+de)"
+    r"(?![a-zăâîșşțţ])|/\s*lun", re.I)
+_NO_RESULTS_RE = re.compile(r"(?<![\d.,])0 rezultate pentru")
 _OLD_WORDS = {"old", "strike", "strikethrough", "through", "crossed", "barred", "before", "initial", "was", "prp",
               "previous", "vechi"}
 _DISCOUNT_RE = re.compile(r"-\s?\d{1,2}\s?%")
@@ -47,6 +56,14 @@ def product_id(url: str) -> Optional[str]:
     return m.group(1) if m else None
 
 
+def canon_url(href: Optional[str], page_url: str) -> str:
+    """Absolute URL without query; product URLs on one host (www) and without a trailing slash."""
+    u = clean_url(href, page_url)
+    if product_id(u):
+        return "https://www.leroymerlin.ro" + urlsplit(u).path.rstrip("/")
+    return u
+
+
 class LeroyMerlinStore(Store):
     key = "leroymerlin"
     name = "Leroy Merlin"
@@ -59,11 +76,15 @@ class LeroyMerlinStore(Store):
     def search_page(self, query: str, page: int) -> list[Offer]:
         url = f"{self.base_url}/produse/search/{self.q_path(query)}"
         html, soup, final = self.get_html(url, params={"page": str(page)} if page > 1 else None)
+        txt = norm_text(soup.body or soup).lower()
+        if _NO_RESULTS_RE.search(txt):        # "0 rezultate pentru: {q}" - any cards below are recommendations
+            self.last_strategy = "no-results"
+            return []
 
         lds = [o for o in offers_from_jsonld(soup, final, self.key) if product_id(clean_url(o.url, final))]
         if len(lds) >= 2:
             for o in lds:
-                o.url = clean_url(o.url, final)
+                o.url = canon_url(o.url, final)
                 o.offer_id = product_id(o.url) or o.offer_id
             self.last_strategy = "jsonld"
             return _dedupe(lds)
@@ -73,13 +94,12 @@ class LeroyMerlinStore(Store):
             self.last_strategy = "anchors"
             return out
         raise_if_challenge(soup, html, final)
-        txt = norm_text(soup.body or soup).lower()
-        if re.search(r"(?<!\d)0 rezultate", txt):
+        if re.search(r"(?<![\d.,])0 rezultate", txt):
             self.last_strategy = "no-results"
             return []
         out = self.fallback(html, final, soup)
         for o in out:
-            o.url = clean_url(o.url, final)
+            o.url = canon_url(o.url, final)
             o.offer_id = product_id(o.url) or o.offer_id
         if not out and any(m in txt for m in _OUTAGE):
             self.last_strategy = "outage-banner"
@@ -87,15 +107,18 @@ class LeroyMerlinStore(Store):
 
     # ------------------------------------------------------------------ anchors -> cards
     def parse_cards(self, soup, page_url: str) -> list[Offer]:
-        groups: dict[str, list[Tag]] = {}
+        # group by product id, not URL string: one card may link "/produse/.../57358" and ".../57358/"
+        # or mix "leroymerlin.ro" and "www.leroymerlin.ro"
+        groups: dict[str, tuple[str, list[Tag]]] = {}
         for a in soup.find_all("a", href=True):
-            u = clean_url(a["href"], page_url)
-            if product_id(u):
-                groups.setdefault(u, []).append(a)
+            u = canon_url(a["href"], page_url)
+            pid = product_id(u)
+            if pid:
+                groups.setdefault(pid, (u, []))[1].append(a)
         out: list[Offer] = []
         seen: set[str] = set()
-        for u, anchors in groups.items():
-            card = _card(anchors[0], u, page_url)
+        for pid, (u, anchors) in groups.items():
+            card = _card(anchors[0], pid, page_url)
             if card is None:
                 continue
             o = self._card_offer(card, u, anchors, page_url)
@@ -116,18 +139,22 @@ class LeroyMerlinStore(Store):
                     v = price_text(element_price_text(el))
                     if v:
                         olds.append(v)
-        text = glue_separators(element_price_text(card))
+        text = glue_separators(element_price_text(_without_title(card, title)))
         mains: list[float] = []
+        units: list[float] = []      # "37,58 lei / l", "49,90 lei / mp"
         for m in PRICE_WITH_CURRENCY_RE.finditer(text):
             v = parse_price(m.group(0))
             if not v:
                 continue
             before, after = text[max(0, m.start() - 14):m.start()], text[m.end():m.end() + 25]
-            if _UNIT_AFTER_RE.match(after) or _NOT_PRICE_RE.search(before + " " + after[:12]):
+            if _NOT_PRICE_RE.search(before + " " + after[:12]):
                 continue
             if any(abs(v - o) < 0.005 for o in olds):
                 continue
-            mains.append(v)
+            (units if _UNIT_AFTER_RE.match(after) else mains).append(v)
+        if not mains:
+            # goods sold by area / length / weight (tabla cutata, gresie: "49,90 lei / mp") show only a unit price
+            mains = units[:1]
         if not mains:
             return None
         price = mains[0]
@@ -143,12 +170,22 @@ class LeroyMerlinStore(Store):
         return Offer(
             store=self.key, title=title, url=url, price=price,
             old_price=old if old and old > price else None, in_stock=stock,
-            offer_id=product_id(url), image=image_of(card, page_url), seller=seller_of(card, ("leroy merlin", "leroymerlin")),
-            source="leroymerlin-cards",
+            offer_id=product_id(url), image=image_of(card, page_url),
+            seller=seller_of(card, ("leroy merlin", "leroymerlin")), source="leroymerlin-cards",
         )
 
 
-def _card(a: Tag, url: str, page_url: str) -> Optional[Tag]:
+def _without_title(card: Tag, title: str):
+    """Copy of the card without the elements that only hold the title (a title like
+    "Card cadou 100 lei" or "... economisire" must not be read as / disqualify the price)."""
+    c = copy.copy(card)
+    for el in c.find_all(["h1", "h2", "h3", "h4", "a", "span", "div", "p", "strong"]):
+        if not el.decomposed and norm_text(el) == title and not el.find(["del", "s"]):
+            el.decompose()
+    return c
+
+
+def _card(a: Tag, pid: str, page_url: str) -> Optional[Tag]:
     """Largest ancestor of `a` that holds exactly one product (and a price)."""
     node: Tag = a
     best: Optional[Tag] = None
@@ -156,8 +193,8 @@ def _card(a: Tag, url: str, page_url: str) -> Optional[Tag]:
         parent = node.parent
         if not isinstance(parent, Tag) or parent.name in ("body", "html", "main"):
             break
-        others = {clean_url(x["href"], page_url) for x in parent.find_all("a", href=True)}
-        if len({u for u in others if product_id(u)} - {url}) > 0:
+        ids = {product_id(clean_url(x["href"], page_url)) for x in parent.find_all("a", href=True)}
+        if ids - {pid, None}:
             break
         if len(parent.get_text(" ", strip=True)) > 2500:
             break

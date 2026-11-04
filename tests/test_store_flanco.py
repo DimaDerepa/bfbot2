@@ -88,9 +88,36 @@ def test_flanco_product_page():
     assert o.price == 2999.99 and o.old_price == 3499.99 and o.title == "Televizor Smart Samsung 65DU8572"
 
 
+def test_flanco_widget_ignored_without_results_wrapper():
+    # theme without the .search.results wrapper: grid cards are kept, the recommendation widget is not
+    page = ("<html><body><main><ol class='products list items product-items'>"
+            "<li class='item product product-item'><a class='product-item-link' href='https://www.flanco.ro/tv-lg-55.html'>"
+            "Televizor LG 55UT73</a><div class='price-box' data-product-id='1'><span data-price-type='finalPrice' "
+            "data-price-amount='1899.9'></span></div></li></ol>"
+            "<div class='block widget block-products-list grid'><ol class='product-items widget-product-grid'>"
+            "<li class='product-item'><a class='product-item-link' href='https://www.flanco.ro/suport.html'>Suport TV</a>"
+            "<div class='price-box' data-product-id='2'><span data-price-type='finalPrice' data-price-amount='99'></span>"
+            "</div></li></ol></div></main></body></html>")
+    offers = make_store(FlancoStore, FakeHttp({"flanco.ro": page})).search("tv lg")
+    assert [(o.offer_id, o.price) for o in offers] == [("1", 1899.9)]
+    # only the widget on the page (no-results theme without a notice): nothing from it
+    widget_only = page.split("<ol class='products list", 1)[0] + page.split("</ol>", 1)[1]
+    store = make_store(FlancoStore, FakeHttp({"flanco.ro": widget_only}))
+    assert [o for o in store.search("xyzzy") if o.offer_id == "2"] == []
+
+
 @pytest.mark.parametrize("text,value", [
-    ("2.999,99 lei", 2999.99), ("2.599 99 Lei", 2599.99), ("2.999, 99 lei", 2999.99), ("279.00 lei /bucată", 279.0),
+    ("2.999,99 lei", 2999.99), ("2.999,,99 lei", 2999.99), ("2.599 99 Lei", 2599.99), ("2.999, 99 lei", 2999.99), ("279.00 lei /bucată", 279.0),
     ("6.399 lei", 6399.0), ("1 299 lei", 1299.0), ("PRP: 2.199,99 lei", 2199.99), ("2.599 99", 2599.99), ("", None),
+    ("1,249.50 lei", 1249.5), ("1.249.00 lei /bucată", 1249.0), ("1\xa0299,99\xa0lei", 1299.99), ("49 99 Lei", 49.99),
 ])
 def test_price_text_formats(text, value):
     assert price_text(text) == value
+
+
+def test_magento_challenge_page_with_http_200():
+    # not caught by the generic net markers (title only, big page) -> adapter raises BlockedError itself
+    page = ("<html><head><title>Pardon Our Interruption</title></head><body>" + "<p>x</p>" * 2000
+            + "<p>Please verify you are a human</p></body></html>")
+    with pytest.raises(BlockedError):
+        make_store(FlancoStore, FakeHttp({"flanco.ro": page})).search("tv")

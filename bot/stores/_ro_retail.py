@@ -5,7 +5,8 @@ Not a store module: the leading underscore keeps it out of the registry scan.
 * `price_text` - Romanian price text, including decimals rendered in a separate element
   ("2.999,<sup>99</sup> lei", "2.599 99 Lei", "2.999, 99 lei", "279.00 lei /bucata").
 * `magento_cards` - stricter Magento 2 listing parser than platforms.parse_magento_listing:
-  scoped to the search results, data-price-amount first, old price only if higher, stock from
+  scoped to the search results, recommendation / cross-sell widgets skipped (also when the theme has no
+  .search.results wrapper), data-price-amount first, old price only if higher, stock from
   `.stock.unavailable` / "Stoc epuizat" / add-to-cart form, images, ids from URL or data-product-id.
 * `RoMagentoStore` - Magento2Store subclass using the parser above (+ PDP fallback for product()).
 """
@@ -32,6 +33,7 @@ def clean_url(href: Optional[str], base: str) -> str:
     return urlunsplit((p.scheme or "https", p.netloc, p.path, "", ""))
 
 
+_DOUBLE_COMMA_RE = re.compile(r"(\d)\s*,\s*,\s*(\d)")
 _GLUE_SEP_RE = re.compile(r"(\d)\s*([.,])\s+(\d)|(\d)\s+([.,])\s*(\d)")
 # "2.599 99 Lei": integer part, a space, two decimals (decimals rendered in their own element)
 _SPLIT_DEC_RE = re.compile(r"(?<![\d.,])(\d{1,3}(?:\.\d{3})+|\d+)\s+(\d{2})\s*(?:lei|ron)\b", re.I)
@@ -44,8 +46,9 @@ def _glue(m: re.Match) -> str:
 
 
 def glue_separators(text: str) -> str:
-    """'2.999, 99 lei' / '2.999 ,99 lei' -> '2.999,99 lei' (separator split from the decimals by markup)."""
+    """'2.999, 99 lei' / '2.999 ,99 lei' / '2.999,,99 lei' -> '2.999,99 lei' (decimals split off by markup)."""
     t = str(text).replace("\xa0", " ").replace("\u202f", " ")
+    t = _DOUBLE_COMMA_RE.sub(r"\1,\2", t)   # "2.999,<sup>99</sup>" -> element_price_text -> "2.999,,99"
     return _GLUE_SEP_RE.sub(_glue, t)
 
 
@@ -158,12 +161,22 @@ _SELLER_PREFIX_RE = re.compile(
 
 
 _SOLD_BY_RE = re.compile(r"v[âa]ndut(?:\s+(?:și|si|ş)\s+livrat)?\s+de", re.I)
+# "Best seller" / "Top seller" badges are not marketplace sellers
+_BADGE_SELLER_RE = re.compile(r"(best|top)[\s_-]*seller", re.I)
+
+
+def _seller_el(card: Tag) -> Optional[Tag]:
+    for el in card.select("[class*='seller'], [class*='vendor'], [class*='sold-by'], [class*='soldby']"):
+        if _BADGE_SELLER_RE.search(" ".join(el.get("class") or [])) or _BADGE_SELLER_RE.search(norm_text(el)):
+            continue
+        return el
+    return None
 
 
 def seller_of(card: Tag, own_names: tuple[str, ...]) -> Optional[str]:
     """Marketplace seller of a card ("Vândut de: X" / element with class *seller*); None for the shop itself."""
     t = ""
-    el = card.select_one("[class*='seller'], [class*='vendor'], [class*='sold-by'], [class*='soldby']")
+    el = _seller_el(card)
     if el is not None:
         t = _SELLER_PREFIX_RE.sub("", norm_text(el)).strip(" :-")
     if not t:
@@ -197,12 +210,17 @@ def _is_old(el: Tag, stop: Tag) -> bool:
 
 
 def _find_cards(root) -> list[Tag]:
-    cards = root.select("li.product-item") or root.select("div.product-item-info") or root.select("div.product-item")
-    if cards:
-        return cards
+    # widget cards are dropped per selector: a "Produse recomandate" <li class=product-item> block must not hide
+    # a main grid built from <div class=product-item> (Dedeman)
+    for sel in ("li.product-item", "div.product-item-info", "div.product-item"):
+        cards = [c for c in root.select(sel) if not _in_widget(c)]
+        if cards:
+            return cards
     found: list[Tag] = []
     ids: set[int] = set()
     for a in root.select("a.product-item-link[href]"):
+        if _in_widget(a):
+            continue
         node = a
         for _ in range(6):
             node = node.parent
@@ -215,6 +233,19 @@ def _find_cards(root) -> list[Tag]:
             ids.add(id(node))
             found.append(node)
     return found
+
+
+def _in_widget(card: Tag) -> bool:
+    """Card inside a recommendation / cross-sell block ("Produse recomandate"): never a search result."""
+    node = card
+    while isinstance(node, Tag):
+        cls = node.get("class") or []
+        if ("widget-product-grid" in cls or "block-products-list" in cls or "products-related" in cls
+                or "products-upsell" in cls or "products-crosssell" in cls
+                or ("block" in cls and ({"widget", "related", "upsell", "crosssell"} & set(cls)))):
+            return True
+        node = node.parent
+    return False
 
 
 def magento_cards(soup: BeautifulSoup, page_url: str, store: str, *,
@@ -269,7 +300,7 @@ def _card_offer(card: Tag, page_url: str, store: str, id_from_url, own_names, wi
 
     pid = id_from_url(url) if id_from_url else None
     if not pid:
-        holder = box if box.get("data-product-id") else (card if card.get("data-product-id") else card.select_one("[data-product-id]"))
+        holder = next((h for h in (box, card) if h.get("data-product-id")), None) or card.select_one("[data-product-id]")
         pid = holder.get("data-product-id") if holder is not None else None
     if not pid:
         inp = card.select_one("input[name='product'][value]")
