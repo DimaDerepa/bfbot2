@@ -1,6 +1,7 @@
 """One monitoring cycle: query stores, match offers against watches, decide and send alerts."""
 from __future__ import annotations
 
+import dataclasses
 import inspect
 import logging
 import os
@@ -101,6 +102,7 @@ class Engine:
         elif os.environ.get("BOT_HOME_ENABLED", "").lower() in ("1", "true", "yes"):
             self.reg = {k: c for k, c in self.reg.items() if k not in home}
         self._bad_urls: dict[str, str] = {}          # url -> error, for URLs that could not even be parsed
+        self._query_pages: dict[str, int] = {}       # query -> result pages per shop (parameter searches)
         self._fetch_deadline: Optional[float] = None
 
     # ------------------------------------------------------------------ watches
@@ -112,16 +114,18 @@ class Engine:
         for w in self.cfg.watches:
             if w.id in overrides:
                 try:
-                    w = watch_from_dict({**_watch_to_spec(w), **overrides[w.id]}, origin="config")
+                    w = _stored_watch({**_watch_to_spec(w), **overrides[w.id]}, origin="config")
                 except (ValueError, TypeError) as e:
                     log.warning("bad override for %s: %s", w.id, e)
             if w.id in disabled:
-                w.enabled = False
+                # a copy: the config object must stay enabled, or /pause then /resume in the same run (one Engine,
+                # one Config) would leave it paused until the next run
+                w = dataclasses.replace(w, enabled=False)
             out.append(w)
         parsed: list[tuple[dict, Watch]] = []
         for d in self.state.tg_watches():
             try:
-                parsed.append((d, watch_from_dict({k: v for k, v in d.items() if k != "origin"}, origin="telegram")))
+                parsed.append((d, _stored_watch({k: v for k, v in d.items() if k != "origin"}, origin="telegram")))
             except (ValueError, TypeError) as e:
                 log.warning("bad telegram watch %s: %s", d, e)
         config_ids = {w.id for w in out}
@@ -235,6 +239,8 @@ class Engine:
             if skip(q):
                 continue
             try:
+                # parameter searches ("telefon 12gb ram") look at several result pages
+                store.max_pages = max(1, int(self._query_pages.get(q) or self.settings.max_pages))
                 run.results[q] = store.search(q)
             except Exception as e:
                 failed(q, e)
@@ -258,8 +264,11 @@ class Engine:
         urls: dict[str, set[str]] = defaultdict(set)
         classes: dict[str, type[Store]] = {}
         self._bad_urls = {}
+        self._query_pages = {}
         for w in watches:
             if w.query:
+                if w.pages:
+                    self._query_pages[w.query] = max(self._query_pages.get(w.query, 0), min(int(w.pages), 5))
                 for k in self.stores_for(w):
                     queries[k].add(w.query)
                     classes[k] = self.reg[k]
@@ -516,3 +525,16 @@ def _watch_to_spec(w: Watch) -> dict:
     d = w.to_dict()
     d.pop("origin", None)
     return d
+
+
+def _stored_watch(d: dict, origin: str) -> Watch:
+    """Re-load a watch that was accepted earlier (Telegram watch or override kept in state) without the input
+    checks of /add, so state written by older versions keeps loading: a watch with a link that the new checks
+    reject stays visible in /list (and deletable) and its link is reported by _url_health instead of the watch
+    silently disappearing."""
+    try:
+        return watch_from_dict(d, origin=origin, validate=False)
+    except TypeError as e:
+        if "validate" not in str(e):   # config.watch_from_dict without the `validate` option
+            raise
+        return watch_from_dict(d, origin=origin)

@@ -181,6 +181,13 @@ def evaluate(watch: Watch, offer: Offer, reference_price: Optional[float] = None
         if not ok_title:
             return MatchResult(False, False, [why])
     reasons: list[str] = []
+    if check_title:
+        from .specs import spec_reasons
+
+        spec_fail = spec_reasons(watch, offer.title)
+        if spec_fail:
+            # wrong RAM / too old model: not the kind of product the user wants -> treat like a title mismatch
+            return MatchResult(False, False, spec_fail)
     store_disc = offer.discount_pct
     hist_disc = None
     if reference_price and reference_price > offer.price:

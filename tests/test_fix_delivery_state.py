@@ -301,12 +301,12 @@ def test_malformed_url_does_not_stop_other_watches():
     cp = CommandProcessor(e)
     tg.updates = [upd(1, "/add https://[www.emag.ro/telefon/pd/D123 <2000")]
     cp.poll()
+    # the broken link is now rejected right at /add (watch_from_dict validates URLs) ...
+    assert any("Некорректная ссылка" in t for t in texts(tg))
+    assert len(e.all_watches()) == 1
     tg.messages.clear()
-    e.run_cycle()                                     # used to raise ValueError: Invalid IPv6 URL
+    e.run_cycle()                                     # ... and the other watches keep working
     assert any("PS5" in t and fmt_price(1999) in t for t in texts(tg))
-    e.run_cycle()
-    warn = [t for t in texts(tg) if "не удаётся прочитать цену по ссылке" in t]
-    assert len(warn) == 1 and "/del 2" in warn[0]
 
 
 def test_unreadable_link_warns_once_and_reports_recovery(monkeypatch):

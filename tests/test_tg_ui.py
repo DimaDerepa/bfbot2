@@ -56,3 +56,30 @@ def test_button_flow():
     cp.poll()
     assert e.all_watches() == []
     assert any(m == "answerCallbackQuery" and "приватный" in p.get("text", "") for m, p in tg.calls)
+
+
+def test_natural_language_parameter_search():
+    from bot import fx
+    from bot.matcher import evaluate
+    from bot.models import Offer
+
+    fx._cache["t"] = 9e18  # use fallback rate, no network
+    tg = TG()
+    e = Engine(Config(Settings(), []), State.load(""), tg)
+    cp = CommandProcessor(e)
+    tg.updates = [msg(1, "/start"), msg(2, "телефон 12 гб оперативки год выпуска 2025 и позже не моторола до 1000 долларов скидка больше 20%")]
+    cp.poll()
+    w = e.all_watches()[0]
+    assert (w.query, w.ram_min, w.year_min, w.exclude, w.min_discount, w.pages) == ("telefon 12gb ram", 12, 2025, ["motorola"], 20.0, 3)
+    assert 4000 < w.max_price < 5000
+    ok = lambda t, p=3000, o=4500: evaluate(w, Offer(store="x", title=t, url="u", price=p, old_price=o, in_stock=True)).ok  # noqa: E731
+    assert ok("Telefon mobil Samsung Galaxy S25, 12GB RAM, 256GB, 5G")
+    assert ok("Telefon Xiaomi Redmi Note 14 Pro 5G, 12/512GB")
+    assert ok("Telefon Apple iPhone 17 Pro 256GB")                       # RAM from the model table
+    assert not ok("Telefon Motorola edge 60, 12GB RAM, 512GB")           # excluded brand
+    assert not ok("Telefon Samsung Galaxy A55 5G, 8GB RAM, 256GB")       # 8 GB, 2024
+    assert not ok("Telefon Samsung Galaxy S24, 12GB RAM, 256GB")         # 2024 model
+    assert not ok("Telefon Samsung Galaxy S25, 12GB RAM, 256GB", 3000, 3300)   # discount < 20%
+    assert not ok("Husa telefon Samsung Galaxy S25 12GB", 50, 90)        # accessory
+    nl = __import__("bot.nlp_ru", fromlist=["parse"]).parse("ноутбук 16гб озу 1 тб до 5000 лей asus или lenovo")
+    assert nl["ram_min"] == 16 and nl["any_of"] == ["asus", "lenovo"] and "1tb" in nl["must_include"]

@@ -36,12 +36,28 @@ FIELDS = {
     "exclude": ("🚫 Исключить слова", "Слова, которых <b>не должно быть</b> в названии, через запятую.\nНапример: <code>max, resigilat, husa</code>\n<code>-</code> — очистить."),
     "must_include": ("✅ Обязательные слова", "Слова, которые <b>обязательно</b> должны быть в названии, через запятую.\nНапример: <code>256gb, oled</code>\n<code>-</code> — очистить (тогда обязательны все слова запроса)."),
     "any_of": ("🔀 Хотя бы одно из", "Слова, из которых <b>хотя бы одно</b> должно быть в названии, через запятую.\nНапример: <code>lg, sony, samsung</code>\n<code>-</code> — очистить."),
+    "ram_min": ("🧠 ОЗУ от", "Введите <b>минимальный объём оперативной памяти</b> в ГБ, например <code>12</code>.\n<code>0</code> — не важно."),
+    "year_min": ("📅 Год от", "Введите <b>минимальный год выпуска модели</b>, например <code>2025</code>.\n<code>0</code> — не важно."),
     "query": ("✏️ Что искать", "Напишите новый <b>поисковый запрос</b> латиницей, как на сайте магазина.\nНапример: <code>iphone 16 pro 256gb</code>"),
 }
 
 
 def _h(watch_id: str) -> str:
     return hashlib.sha1(watch_id.encode()).hexdigest()[:8]
+
+
+def _money(text: str) -> Optional[float]:
+    """'4800', '4 800 лей', '1000$', '900 евро', '1,2к' -> RON."""
+    from .fx import currency_of, to_ron
+
+    t = text.strip().lower()
+    cur = None
+    m = re.search(r"(\$|€|£|usd|eur|euro|евро|долл\w*|доллар\w*|бакс\w*|лей|леев|lei|ron)", t)
+    if m:
+        cur = currency_of(m.group(1))
+        t = (t[:m.start()] + t[m.end():]).strip()
+    v = _num(t)
+    return None if v is None else to_ron(v, cur or "RON")
 
 
 def _num(text: str) -> Optional[float]:
@@ -117,7 +133,9 @@ class TelegramUI:
         return self._find(_h(w.id)) or w
 
     def _create(self, text: str) -> Watch:
-        spec = parse_watch_spec(text)
+        from . import nlp_ru
+
+        spec = nlp_ru.parse(text) if nlp_ru.looks_natural(text) else parse_watch_spec(text)
         if not spec.get("query") and not spec.get("urls"):
             raise ValueError("Не понял, что искать. Напишите, например: <code>iphone 16 pro 256gb</code>")
         spec.setdefault("name", spec.get("query") or spec["urls"][0])
@@ -158,6 +176,7 @@ class TelegramUI:
             f"🔎 Запрос: <code>{esc(w.query or '—')}</code>" + (f" + {len(w.urls)} ссылк." if w.urls else ""),
             f"💰 Цена: {price}",
             f"🏷 Скидка: {('от ' + format(w.min_discount, 'g') + '%') if w.min_discount else 'не важно'}",
+            f"🧠 ОЗУ: {('от ' + str(w.ram_min) + ' ГБ') if w.ram_min else 'не важно'} · 📅 Год: {('от ' + str(w.year_min)) if w.year_min else 'не важно'}",
             f"🚫 Исключить: {esc(', '.join(w.exclude)) or '—'}",
             f"✅ Обязательно: {esc(', '.join(w.must_include)) or 'все слова запроса'}",
         ]
@@ -166,6 +185,8 @@ class TelegramUI:
         stores = ", ".join(self.engine.store_names.get(s, s) for s in w.stores) if w.stores else "все подходящие" + cats
         lines.append(f"🏪 Магазины: {esc(stores)}")
         lines.append(f"📦 Наличие: {'только в наличии' if w.in_stock else 'все, даже нет в наличии'}")
+        if w.ram_min or w.year_min:
+            lines.append("<i>ОЗУ и год определяются по названию и модели; если их не понять, товар не показывается.</i>")
         best = self.state.best_offers(w, 1)
         if best:
             b = best[0]
@@ -180,6 +201,7 @@ class TelegramUI:
             [b("💰 Макс. цена", "f.max_price"), b("💵 Мин. цена", "f.min_price")],
             [b("🏷 Скидка %", "f.min_discount"), b("🚫 Исключить", "f.exclude")],
             [b("✅ Обязательно", "f.must_include"), b("🔀 Одно из", "f.any_of")],
+            [b("🧠 ОЗУ от", "f.ram_min"), b("📅 Год от", "f.year_min")],
             [b("🏪 Магазины", "st"), b("📦 Наличие", "stock")],
             [b("✏️ Запрос", "f.query"), b("📊 Топ-10", "top")],
             [b("▶️ Включить" if not w.enabled else "⏸ Пауза", "pz"), b("🗑 Удалить", "del")],
@@ -249,13 +271,18 @@ class TelegramUI:
                 self.send(chat_id, "Этот товар уже удалён.", MAIN_KB)
                 return True
             field = pend["field"]
-            if field in ("max_price", "min_price", "min_discount"):
-                v = _num(text)
+            if field in ("max_price", "min_price", "min_discount", "ram_min", "year_min"):
+                v = _money(text) if field in ("max_price", "min_price") else _num(text)
                 if v is None:
                     self._pending()[chat_id] = pend
-                    self.send(chat_id, "Нужно число, например <code>4800</code>. Попробуйте ещё раз:")
+                    self.send(chat_id, "Нужно число, например <code>4800</code> (можно <code>1000$</code> или <code>900€</code>). Попробуйте ещё раз:")
                     return True
-                changes = {field: (v if v > 0 else None)}
+                if field in ("ram_min", "year_min"):
+                    changes = {field: int(v) if v > 0 else None}
+                    if v > 0:
+                        changes["pages"] = 3
+                else:
+                    changes = {field: (v if v > 0 else None)}
             elif field == "query":
                 q = text.strip()
                 changes = {"query": q, "name": q} if w.origin == "telegram" else {"query": q}
@@ -269,10 +296,12 @@ class TelegramUI:
 
     def _ask_new(self, chat_id: str) -> bool:
         self._pending()[chat_id] = {"field": "new"}
-        self.send(chat_id, "Что искать? Напишите название <b>латиницей, как на сайте магазина</b>:\n"
-                           "<code>iphone 16 pro 256gb</code> · <code>rtx 5070</code> · <code>aspirator dyson v15</code>\n\n"
-                           "Можно сразу с условиями: <code>ps5 slim до 2300 -digital</code>\n"
-                           "Или пришлите ссылку на конкретный товар в любом магазине.")
+        self.send(chat_id, "Что искать? Опишите <b>обычными словами</b>:\n"
+                           "<code>телефон 12 гб оперативки 2025 и новее не моторола до 1000$ скидка больше 20%</code>\n"
+                           "<code>ноутбук 16 гб озу до 4000 лей asus или lenovo</code>\n"
+                           "<code>телевизор oled 55 до 4500</code> · <code>пылесос дайсон скидка 30%</code>\n\n"
+                           "Или конкретную модель латиницей: <code>iphone 17 pro 256gb</code>, <code>rtx 5070</code>\n"
+                           "Или ссылку на товар в любом магазине.")
         return True
 
     def handle_callback(self, cq: dict) -> None:

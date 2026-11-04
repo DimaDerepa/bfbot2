@@ -63,12 +63,22 @@ class Watch:
     exclude_accessories: bool = True
     drop_pct: Optional[float] = None          # re-alert when price drops by >= this % (default from settings)
     enabled: bool = True
+    ram_min: Optional[int] = None             # parameter search: RAM >= N GB (read from the title)
+    year_min: Optional[int] = None            # parameter search: model released in year >= N (model table)
+    allow_unknown_specs: bool = False         # let offers through when RAM/year cannot be determined
+    pages: Optional[int] = None               # result pages per shop (parameter searches look deeper)
     origin: str = "config"                    # "config" | "telegram"
     id: str = ""
 
     def __post_init__(self) -> None:
         from .text import slug
 
+        for f in ("ram_min", "year_min", "pages"):
+            v = getattr(self, f)
+            if v in ("", 0):
+                setattr(self, f, None)
+            elif v is not None:
+                setattr(self, f, int(float(v)))
         if not self.id:
             self.id = slug(self.name)
         if self.query is None and not self.urls:
@@ -92,6 +102,10 @@ class Watch:
             parts.append(f"от {self.min_price:g} лей")
         if self.min_discount:
             parts.append(f"скидка ≥{self.min_discount:g}%")
+        if self.ram_min:
+            parts.append(f"ОЗУ ≥{self.ram_min} ГБ")
+        if self.year_min:
+            parts.append(f"модель {self.year_min}+")
         if self.must_include:
             parts.append("+" + " +".join(self.must_include))
         if self.any_of:
