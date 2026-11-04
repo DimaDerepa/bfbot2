@@ -210,3 +210,13 @@ def test_infer_categories():
     assert "beauty" in infer_categories("parfum dior sauvage edp")
     assert infer_categories("ceva necunoscut xyz") == set()
     assert "electronics" in infer_categories("iphone 16 pro 256gb")
+
+
+def test_quiet_hours():
+    import datetime as dt
+    from bot.notify import in_quiet_hours
+    at = lambda h, m=0: dt.datetime(2026, 11, 13, h, m)
+    assert in_quiet_hours("23-8", now_dt=at(23, 30)) and in_quiet_hours("23-8", now_dt=at(3))
+    assert not in_quiet_hours("23-8", now_dt=at(8)) and not in_quiet_hours("23-8", now_dt=at(14))
+    assert in_quiet_hours("13:00-14:30", now_dt=at(14, 10)) and not in_quiet_hours(None)
+    assert not in_quiet_hours("garbage")

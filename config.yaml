@@ -48,6 +48,7 @@ settings:
   history_days: 45               # сколько хранить историю цен
   interval_minutes: 10           # только для режима daemon (VPS / домашний сервер)
   store_every: {}                # например {emag: 3} — опрашивать eMAG только каждую 3-ю проверку (экономия прокси)
+  quiet_hours: "23-8"            # по времени Бухареста уведомления приходят без звука; null — всегда со звуком
 
   # Свои магазины (любой сайт на популярной платформе). platform: shopify | woocommerce | vtex | magento2 | html
   shops: []

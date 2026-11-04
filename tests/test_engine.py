@@ -16,7 +16,7 @@ class FakeTG(Telegram):
         self.messages: list[tuple[str, str]] = []
         self.updates: list[dict] = []
 
-    def send(self, text, chat_id=None, preview=False):
+    def send(self, text, chat_id=None, preview=False, silent=False):
         self.messages.append((chat_id or ",".join(self.chat_ids), text))
 
     def api(self, method, _http_timeout=30, **params):

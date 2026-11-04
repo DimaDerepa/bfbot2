@@ -64,7 +64,7 @@ class Telegram:
             return data
         return {"ok": False, "description": "network error"}
 
-    def send(self, text: str, chat_id: Optional[str] = None, preview: bool = False) -> None:
+    def send(self, text: str, chat_id: Optional[str] = None, preview: bool = False, silent: bool = False) -> None:
         targets = [chat_id] if chat_id else self.chat_ids
         if not self.token or not targets:
             print("---- [telegram disabled] ----\n" + text + "\n-----------------------------")
@@ -72,12 +72,34 @@ class Telegram:
         for chunk in split_message(text):
             for cid in targets:
                 res = self.api("sendMessage", chat_id=cid, text=chunk, parse_mode="HTML",
-                               link_preview_options={"is_disabled": not preview})
+                               link_preview_options={"is_disabled": not preview}, disable_notification=silent)
                 if not res.get("ok") and "parse" in str(res.get("description", "")).lower():
                     # fall back to plain text if our HTML was rejected
                     self.api("sendMessage", chat_id=cid, text=_strip_tags(chunk),
-                             link_preview_options={"is_disabled": True})
+                             link_preview_options={"is_disabled": True}, disable_notification=silent)
                 self.sent += 1
+
+
+def in_quiet_hours(spec: Optional[str], tz: str = "Europe/Bucharest", now_dt=None) -> bool:
+    """spec like "23-8" or "23:30-07:00" (local time). Wraps around midnight."""
+    if not spec:
+        return False
+    import datetime as _dt
+    from zoneinfo import ZoneInfo
+
+    try:
+        a, b = [x.strip() for x in str(spec).split("-", 1)]
+
+        def mins(x: str) -> int:
+            h, _, m = x.partition(":")
+            return int(h) * 60 + int(m or 0)
+
+        start, end = mins(a), mins(b)
+    except (ValueError, TypeError):
+        return False
+    now_dt = now_dt or _dt.datetime.now(ZoneInfo(tz))
+    cur = now_dt.hour * 60 + now_dt.minute
+    return start <= cur < end if start <= end else (cur >= start or cur < end)
 
 
 def _strip_tags(s: str) -> str:

@@ -201,7 +201,14 @@ def cmd_diag(args) -> int:
 
 def cmd_stores(args) -> int:
     cfg = load_config(args.config)
-    for k, cls in sorted(registry(cfg.settings.shops).items()):
+    reg = registry(cfg.settings.shops)
+    if getattr(args, "markdown", False):
+        print("| ключ | магазин | категории | тип |\n|---|---|---|---|")
+        for k, cls in sorted(reg.items(), key=lambda kv: (not kv[1].aggregator, kv[0])):
+            kind = "агрегатор цен" if cls.aggregator else ("выключен по умолчанию" if not cls.enabled_by_default else "магазин")
+            print(f"| `{k}` | [{cls.name}]({cls.base_url}) | {', '.join(cls.categories)} | {kind} |")
+        return 0
+    for k, cls in sorted(reg.items()):
         print(f"{k:<14} {cls.name:<22} {'aggregator ' if cls.aggregator else ''}{','.join(cls.categories)}  {cls.base_url}")
     if IMPORT_ERRORS:
         print("import errors:", IMPORT_ERRORS)
@@ -240,6 +247,7 @@ def main(argv: list[str] | None = None) -> int:
     g.set_defaults(fn=cmd_diag)
 
     st = sub.add_parser("stores")
+    st.add_argument("--markdown", action="store_true", help="print a Markdown table (for README)")
     st.set_defaults(fn=cmd_stores)
 
     args = p.parse_args(argv)

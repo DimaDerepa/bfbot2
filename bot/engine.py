@@ -13,7 +13,7 @@ from .config import Config, watch_from_dict
 from .matcher import evaluate
 from .models import Offer, Watch
 from .net import BlockedError, FetchError, Http, proxy_for
-from .notify import Telegram, esc, format_alerts
+from .notify import Telegram, esc, format_alerts, in_quiet_hours
 from .state import Alert, State
 from .stores import Store, registry, store_for_url, web_store_for
 
@@ -281,10 +281,11 @@ class Engine:
             print("---- [dry-run message] ----\n" + text + "\n---------------------------")
             return
         chat = self.state.get("telegram", "chat_id")
+        silent = in_quiet_hours(self.settings.quiet_hours)
         if self.tg.chat_ids:
-            self.tg.send(text)
+            self.tg.send(text, silent=silent)
         elif chat:
-            self.tg.send(text, chat_id=str(chat))
+            self.tg.send(text, chat_id=str(chat), silent=silent)
         else:
             print("---- [no chat bound yet] ----\n" + text)
 
