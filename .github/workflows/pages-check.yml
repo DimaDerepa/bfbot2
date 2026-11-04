@@ -1,0 +1,19 @@
+name: pages-check
+on: workflow_dispatch
+permissions:
+  pages: read
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Pages config and URLs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "== pages config"; gh api "repos/$GITHUB_REPOSITORY/pages" || true
+          echo "== latest build"; gh api "repos/$GITHUB_REPOSITORY/pages/builds/latest" --jq '{status, error, commit, created_at}' || true
+          owner=$(echo "${GITHUB_REPOSITORY%%/*}" | tr A-Z a-z); repo="${GITHUB_REPOSITORY#*/}"
+          for u in "https://$owner.github.io/$repo/" "https://$owner.github.io/$repo/app/" "https://$owner.github.io/$repo/docs/app/" "https://$owner.github.io/$repo/app/index.html"; do
+            echo "$(curl -s -o /dev/null -w '%{http_code}' -L "$u") $u"
+          done
