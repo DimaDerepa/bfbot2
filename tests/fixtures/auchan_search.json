@@ -1,0 +1,104 @@
+{
+  "products": [
+    {
+      "cacheId": "sp-1029384",
+      "productId": "1029384",
+      "description": "Televizor Smart LED Samsung, 138 cm, 4K Ultra HD",
+      "productName": "Televizor Smart LED Samsung UE55DU7172UXXH, 138 cm, 4K Ultra HD, Clasa G",
+      "productReference": "8806095558831",
+      "linkText": "televizor-smart-led-samsung-ue55du7172uxxh-138-cm-4k-ultra-hd-clasa-g",
+      "brand": "Samsung",
+      "brandId": 2000122,
+      "link": "/televizor-smart-led-samsung-ue55du7172uxxh-138-cm-4k-ultra-hd-clasa-g/p?skuId=1029384",
+      "categories": ["/Electronice si electrocasnice/TV, audio, video/Televizoare/"],
+      "priceRange": {"sellingPrice": {"highPrice": 1799.9, "lowPrice": 1799.9}, "listPrice": {"highPrice": 2299.9, "lowPrice": 2299.9}},
+      "items": [
+        {
+          "itemId": "1029384",
+          "name": "Televizor Smart LED Samsung UE55DU7172UXXH",
+          "ean": "8806095558831",
+          "measurementUnit": "un",
+          "unitMultiplier": 1,
+          "images": [{"imageId": "1771231", "imageLabel": "", "imageUrl": "https://auchan.vtexassets.com/arquivos/ids/1771231/televizor-samsung-ue55du7172.jpg?v=638601"}],
+          "sellers": [
+            {
+              "sellerId": "1",
+              "sellerName": "Auchan Romania",
+              "sellerDefault": true,
+              "commertialOffer": {"Price": 1799.9, "ListPrice": 2299.9, "PriceWithoutDiscount": 1799.9, "spotPrice": 1799.9, "AvailableQuantity": 10000, "Tax": 0, "teasers": [], "discountHighlights": []}
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "productId": "5512",
+      "productName": "Banane, per kg",
+      "linkText": "banane-per-kg",
+      "brand": "Auchan",
+      "link": "/banane-per-kg/p",
+      "items": [
+        {
+          "itemId": "5512",
+          "measurementUnit": "kg",
+          "unitMultiplier": 0.2,
+          "images": [{"imageUrl": "https://auchan.vtexassets.com/arquivos/ids/55120/banane.jpg"}],
+          "sellers": [
+            {"sellerId": "1", "sellerName": "Auchan Romania", "sellerDefault": true,
+             "commertialOffer": {"Price": 6.99, "ListPrice": 7.99, "PriceWithoutDiscount": 6.99, "AvailableQuantity": 99}}
+          ]
+        }
+      ]
+    },
+    {
+      "productId": "2044001",
+      "productName": "Soundbar Samsung HW-B550, 2.1, 410 W, Bluetooth",
+      "linkText": "soundbar-samsung-hw-b550-2-1-410-w-bluetooth",
+      "brand": "Samsung",
+      "link": "/soundbar-samsung-hw-b550-2-1-410-w-bluetooth/p",
+      "items": [
+        {
+          "itemId": "2044001",
+          "measurementUnit": "un",
+          "unitMultiplier": 1,
+          "images": [],
+          "sellers": [
+            {"sellerId": "1", "sellerName": "Auchan Romania", "sellerDefault": true,
+             "commertialOffer": {"Price": 0, "ListPrice": 0, "AvailableQuantity": 0}},
+            {"sellerId": "mkp77", "sellerName": "Electro Vision SRL", "sellerDefault": false,
+             "commertialOffer": {"Price": 849.99, "ListPrice": 849.99, "PriceWithoutDiscount": 999.99, "AvailableQuantity": 3}}
+          ]
+        }
+      ]
+    },
+    {
+      "productId": "2044777",
+      "productName": "Televizor Samsung QE65Q60D, 163 cm, QLED 4K",
+      "linkText": "televizor-samsung-qe65q60d-163-cm-qled-4k",
+      "link": "",
+      "items": [
+        {
+          "itemId": "2044777",
+          "measurementUnit": "un",
+          "unitMultiplier": 1,
+          "sellers": [
+            {"sellerId": "1", "sellerName": "Auchan Romania", "sellerDefault": true,
+             "commertialOffer": {"Price": 3499.0, "ListPrice": 3499.0, "AvailableQuantity": 0}}
+          ]
+        }
+      ]
+    },
+    {
+      "productId": "2044999",
+      "productName": "Suport TV fara pret",
+      "linkText": "suport-tv",
+      "items": [{"itemId": "2044999", "sellers": []}]
+    }
+  ],
+  "recordsFiltered": 5,
+  "correction": {"misspelled": false},
+  "fuzzy": "0",
+  "operator": "and",
+  "translated": false,
+  "pagination": {"count": 1, "current": {"index": 1}}
+}

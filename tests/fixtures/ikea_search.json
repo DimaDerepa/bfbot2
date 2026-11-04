@@ -1,0 +1,97 @@
+{
+  "searchResultPage": {
+    "searchPhrase": "billy",
+    "searchCorrection": null,
+    "products": {
+      "main": {
+        "start": 0,
+        "end": 24,
+        "max": 41,
+        "moreToken": "eyJzdGFydCI6MjR9",
+        "items": [
+          {
+            "isBreakout": false,
+            "metadata": "eyJpdGVtTm8iOiIwMDI2Mzg1MCJ9",
+            "product": {
+              "id": "00263850",
+              "itemNoGlobal": "00263850",
+              "itemNo": "00263850",
+              "itemType": "ART",
+              "name": "BILLY",
+              "typeName": "Bibliotecă",
+              "itemMeasureReferenceText": "80x28x202 cm",
+              "mainImageUrl": "https://www.ikea.com/ro/ro/images/products/billy-biblioteca-alb__0625599_pe692385_s5.jpg",
+              "mainImageAlt": "BILLY Bibliotecă, alb, 80x28x202 cm",
+              "pipUrl": "https://www.ikea.com/ro/ro/p/billy-biblioteca-alb-00263850/",
+              "validDesignText": "alb",
+              "onlineSellable": true,
+              "lastChance": false,
+              "salesPrice": {
+                "currencyCode": "RON",
+                "numeral": 199,
+                "current": {"prefix": "", "wholeNumber": "199", "separator": "", "decimals": "", "suffix": " Lei", "isRegularCurrency": false},
+                "isBreathTaking": false
+              },
+              "ratingValue": 4.7,
+              "ratingCount": 2087,
+              "badge": {}
+            }
+          },
+          {
+            "isBreakout": true,
+            "product": null,
+            "content": {"type": "PLANNER", "title": "Planificator BILLY"}
+          },
+          {
+            "isBreakout": false,
+            "product": {
+              "id": "s59182201",
+              "itemNoGlobal": "59182201",
+              "itemNo": "59182201",
+              "itemType": "SPR",
+              "name": "BILLY / OXBERG",
+              "typeName": "Bibliotecă cu uşi",
+              "itemMeasureReferenceText": "160x30x202 cm",
+              "mainImageUrl": "https://www.ikea.com/ro/ro/images/products/billy-oxberg-biblioteca-cu-usi__0644189_pe702530_s5.jpg",
+              "pipUrl": "https://www.ikea.com/ro/ro/p/billy-oxberg-biblioteca-cu-usi-alb-s59182201/?ref=sr",
+              "validDesignText": "alb",
+              "salesPrice": {
+                "currencyCode": "RON",
+                "numeral": 1299.9,
+                "current": {"prefix": "", "wholeNumber": "1.299", "separator": ",", "decimals": "90", "suffix": " Lei"},
+                "previous": {"prefix": "", "wholeNumber": "1.499", "separator": ",", "decimals": "90", "suffix": " Lei"},
+                "tag": "NEW_LOWER_PRICE"
+              },
+              "ratingValue": 4.6,
+              "ratingCount": 112
+            }
+          },
+          {
+            "isBreakout": false,
+            "product": {
+              "id": "40477340",
+              "itemNo": "40477340",
+              "name": "BILLY",
+              "typeName": "Extensie înălţime",
+              "itemMeasureReferenceText": "40x28x35 cm",
+              "pipUrl": "https://www.ikea.com/ro/ro/p/billy-extensie-inaltime-alb-40477340/",
+              "validDesignText": "alb",
+              "salesPrice": {"currencyCode": "RON", "numeral": 75, "previous": {"numeral": 89}}
+            }
+          },
+          {
+            "isBreakout": false,
+            "product": {
+              "id": "90000001",
+              "itemNo": "90000001",
+              "name": "BILLY",
+              "typeName": "Fără preţ",
+              "pipUrl": "https://www.ikea.com/ro/ro/p/billy-90000001/",
+              "salesPrice": {"currencyCode": "RON"}
+            }
+          }
+        ]
+      }
+    }
+  }
+}

@@ -31,8 +31,8 @@ from ..extract import make_soup
 from ..models import Offer
 from .base import Store
 from ._itshops import (
-    NOT_PRICE_CONTEXT, PagerMixin, clean_url, current_price, dedupe, image_of, longest, next_page_url, old_price_in,
-    outermost, pdp_offer, raise_if_challenge, stock_of_el, text_of, within,
+    PagerMixin, clean_url, current_price, dedupe, image_of, longest, next_page_url, old_price_in, other_higher_price,
+    outermost, pdp_offer, raise_if_challenge, stock_of_el,
 )
 
 _CART_ID_RE = re.compile(r"adaugaincos-(\d+)")
@@ -88,7 +88,7 @@ class PcGarageStore(PagerMixin, Store):
         price = current_price(price_el)
         if not price:
             return None
-        old = old_price_in(container, price, exclude=[price_el]) or self._later_price(container, price_el, price)
+        old = old_price_in(container, price, exclude=[price_el]) or other_higher_price(container, price_el, price)
         pid = None
         el = c if c.get("data-pid") else c.select_one("[data-pid]")
         if el is not None and str(el.get("data-pid") or "").strip().isdigit():
@@ -105,23 +105,6 @@ class PcGarageStore(PagerMixin, Store):
             in_stock=stock_of_el(c.select_one(".product_box_availability")),
             offer_id=pid, image=image_of(c, base, ".product_box_image img"), source="pcgarage",
         )
-
-    @staticmethod
-    def _later_price(container: Tag, price_el: Optional[Tag], price: float) -> Optional[float]:
-        """A second, higher price in the price box (PRP / list price without an 'old' class)."""
-        if price_el is None:
-            return None
-        best = None
-        for el in container.find_all(["p", "span", "div"]):
-            if within(el, price_el) or within(price_el, el) or el.find(["p", "span", "div"]) is not None:
-                continue
-            t = text_of(el)
-            if not t or NOT_PRICE_CONTEXT.search(t) or not re.search(r"\d", t):
-                continue
-            v = current_price(el)
-            if v and price < v < price * 5 and (best is None or v > best):
-                best = v
-        return best
 
     # ------------------------------------------------------------------ product page
     def product(self, url: str) -> Optional[Offer]:

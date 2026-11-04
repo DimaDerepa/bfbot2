@@ -23,10 +23,10 @@ import re
 from typing import Iterable, Optional
 from urllib.parse import urljoin, urlsplit, urlunsplit
 
-from bs4 import BeautifulSoup, Tag
+from bs4 import BeautifulSoup, NavigableString, Tag
 
 from ..net import BlockedError
-from ..prices import element_price, parse_price
+from ..prices import parse_price
 
 # --------------------------------------------------------------------------- urls / text
 
@@ -127,11 +127,46 @@ def _strip_old(el: Tag) -> Tag:
     return el
 
 
+_GLUE_RE = re.compile(r"(\d)\s*([.,])\s*(\d)")
+_PRICE_ATTRS = ("data-price-amount", "data-price", "content", "data-value")
+
+
+def price_text(el) -> str:
+    """Visible text of a price element; <sup> decimals joined whether the separator sits inside the <sup>
+    ("1.299<sup>,99</sup>"), before it ("1.299,<sup>99</sup>") or nowhere ("1.299<sup>99</sup>")."""
+    if el is None:
+        return ""
+    el = copy.copy(el)
+    for sup in el.find_all("sup"):
+        t = sup.get_text("", strip=True)
+        d = t.lstrip(",.").strip()
+        prev = sup.previous_sibling
+        ptxt = str(prev) if isinstance(prev, NavigableString) else (prev.get_text() if isinstance(prev, Tag) else "")
+        if d.isdigit() and len(d) <= 2:
+            sup.replace_with(("" if ptxt.rstrip().endswith((",", ".")) else ",") + d)
+        else:
+            sup.replace_with(" " + t)
+    return _GLUE_RE.sub(r"\1\2\3", norm(el.get_text(" ", strip=True)))
+
+
+def el_price(el) -> Optional[float]:
+    """Price of an element: machine attributes first (plain decimals), then visible text."""
+    if el is None or not isinstance(el, Tag):
+        return None
+    for attr in _PRICE_ATTRS:
+        v = el.get(attr)
+        if v:
+            p = num_attr(v)
+            if p:
+                return p
+    return parse_price(price_text(el))
+
+
 def current_price(el) -> Optional[float]:
     """Price of `el` (attributes, <sup> decimals) ignoring struck/old children."""
-    if el is None:
+    if el is None or not isinstance(el, Tag):
         return None
-    return element_price(_strip_old(el))
+    return el_price(_strip_old(el))
 
 
 def within(el, anc) -> bool:
@@ -166,8 +201,25 @@ def old_price_in(card: Optional[Tag], price: Optional[float], exclude: Iterable[
         ctx = text_of(el)
         if not ctx or NOT_PRICE_CONTEXT.search(ctx):
             continue
-        v = element_price(el)
+        v = el_price(el)
         if v and v > price and v < price * 20 and (best is None or v > best):
+            best = v
+    return best
+
+
+def other_higher_price(container: Optional[Tag], price_el: Optional[Tag], price: Optional[float]) -> Optional[float]:
+    """A second, higher price in a price box without an "old" class (PRP / list price) - leaf elements only."""
+    if container is None or price_el is None or not price:
+        return None
+    best: Optional[float] = None
+    for el in container.find_all(["p", "span", "div", "strong", "b"]):
+        if within(el, price_el) or within(price_el, el) or el.find(["p", "span", "div", "strong", "b"]) is not None:
+            continue
+        t = text_of(el)
+        if not t or not re.search(r"\d", t) or NOT_PRICE_CONTEXT.search(t):
+            continue
+        v = el_price(el)
+        if v and price < v < price * 5 and (best is None or v > best):
             best = v
     return best
 
@@ -326,7 +378,7 @@ def pdp_old_price(soup: BeautifulSoup, price: float, selectors: Iterable[str]) -
         for el in soup.select(sel):
             if NOT_PRICE_CONTEXT.search(text_of(el)):
                 continue
-            v = element_price(el)
+            v = el_price(el)
             if v and price < v < price * 20 and (best is None or v > best):
                 best = v
     return best
