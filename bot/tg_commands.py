@@ -152,9 +152,8 @@ class CommandProcessor:
         if cmd in ("/start", "/menu"):
             self.ui.start(chat_id)
             return None
-        if cmd == "/list" and not arg:
-            t, kb = self.ui.list_view()
-            self.ui.send(chat_id, t, kb)
+        if cmd in ("/list", "/app") and not arg:
+            self.ui.send(chat_id, f"Всё управление — в приложении: кнопка «{self.ui.BTN_APP_TEXT}» внизу чата.", self.ui.main_kb())
             return None
         if cmd == "/add" and not arg:
             self.ui._ask_new(chat_id)

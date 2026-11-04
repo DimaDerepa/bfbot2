@@ -48,8 +48,8 @@ def _print_summary(summary: dict) -> None:
         print(f"  [{status}] {k:<14} offers={s['offers']:<4} req={s['requests']:<3} {s['sec']:>5}s{err}")
 
 
-UI_VERSION = 4
-UI_NEWS = ("🆕 <b>Новое приложение.</b> Нажмите кнопку <b>⚙️ Управление</b> внизу чата: там все товары с лучшими "
+UI_VERSION = 5
+UI_NEWS = ("🆕 <b>Новое приложение.</b> Нажмите кнопку <b>🎯 Открыть приложение</b> внизу чата: там все товары с лучшими "
            "ценами, условия, магазины и настройки. Добавить товар можно на вкладке ➕ или просто написав мне, что ищете, "
            "обычными словами. Теперь я отвечаю сразу.")
 HOME_KEYS = ("offers", "initialized", "stores", "runs", "last_run", "last_summary", "url_fail", "events_applied")

@@ -23,7 +23,7 @@ BTN_LIST = "📋 Мои товары"
 BTN_STORES = "🏪 Магазины"
 BTN_HELP = "ℹ️ Помощь"
 
-BTN_APP = "⚙️ Управление"
+BTN_APP = "🎯 Открыть приложение"
 
 MAIN_KB = {
     "keyboard": [[{"text": BTN_ADD}, {"text": BTN_LIST}], [{"text": BTN_STORES}, {"text": BTN_HELP}]],
@@ -43,8 +43,7 @@ def repo_slug() -> Optional[str]:
 
 
 def app_url() -> Optional[str]:
-    """Mini App page. BOT_APP_URL overrides; otherwise GitHub Pages of this repo (docs/app/) when it is
-    switched on, else the same file served by raw.githack.com (works without enabling Pages)."""
+    """Mini App page: BOT_APP_URL overrides, otherwise GitHub Pages of this repo (served from main /app/)."""
     import os
 
     url = os.environ.get("BOT_APP_URL")
@@ -53,20 +52,8 @@ def app_url() -> Optional[str]:
     repo = repo_slug()
     if not repo:
         return None
-    if repo in _APP_URL_CACHE:
-        return _APP_URL_CACHE[repo]
     owner, name = repo.split("/", 1)
-    pages = f"https://{owner.lower()}.github.io/{name}/app/"
-    chosen = f"https://raw.githack.com/{owner}/{name}/main/docs/app/index.html"
-    try:
-        import requests
-
-        if requests.head(pages, timeout=6, allow_redirects=True).status_code == 200:
-            chosen = pages
-    except Exception:
-        pass
-    _APP_URL_CACHE[repo] = chosen
-    return chosen
+    return f"https://{owner.lower()}.github.io/{name}/app/"
 
 FIELDS = {
     "max_price": ("💰 Макс. цена", "Введите <b>максимальную цену</b> в леях, например <code>4800</code>.\n<code>0</code> — убрать ограничение."),
@@ -124,6 +111,7 @@ def _words(text: str) -> list[str]:
 
 
 class TelegramUI:
+    BTN_APP_TEXT = BTN_APP
     def __init__(self, cp) -> None:
         self.cp = cp
         self.engine = cp.engine
@@ -147,12 +135,13 @@ class TelegramUI:
             self.send(chat_id, text, markup)
 
     def main_kb(self) -> dict:
+        """The only chat button: opens the Mini App (all features live there)."""
         url = app_url()
         if not url:
-            return MAIN_KB
+            return {"remove_keyboard": True}
         sep = "&" if "?" in url else "?"
-        return {**MAIN_KB, "keyboard": [[{"text": BTN_APP, "web_app": {"url": f"{url}{sep}d={self.webapp_payload()}"}}],
-                                        *MAIN_KB["keyboard"]]}
+        return {"keyboard": [[{"text": BTN_APP, "web_app": {"url": f"{url}{sep}d={self.webapp_payload()}"}}]],
+                "resize_keyboard": True, "is_persistent": True}
 
     def webapp_payload(self) -> str:
         import base64
@@ -438,22 +427,15 @@ class TelegramUI:
     def start(self, chat_id: str, intro: str = "") -> None:
         self.send(chat_id, (intro + "\n\n" if intro else "") +
                   "Я слежу за ценами в магазинах Румынии и пишу, когда товар подходит под ваши условия.\n\n"
-                  "Нажмите <b>➕ Добавить товар</b>, напишите, что искать, а дальше настройте цену, скидку и магазины кнопками.",
-                  self.main_kb())
+                  f"Нажмите <b>{BTN_APP}</b> внизу чата: там все товары, лучшие цены, условия, магазины и настройки. "
+                  "Можно и просто написать мне, что ищете, обычными словами.", self.main_kb())
 
     def handle_text(self, chat_id: str, text: str) -> bool:
         """Menu buttons and answers to a pending question. Returns True if the message was consumed."""
         if text == BTN_ADD:
             return self._ask_new(chat_id)
-        if text == BTN_LIST:
-            t, kb = self.list_view()
-            self.send(chat_id, t, kb)
-            return True
-        if text == BTN_STORES:
-            self.send(chat_id, self.cp.cmd_stores(""), self.main_kb())
-            return True
-        if text == BTN_HELP:
-            self.send(chat_id, self.cp.handle(chat_id, "/help") or "", self.main_kb())
+        if text in (BTN_LIST, BTN_STORES, BTN_HELP, "⚙️ Управление"):
+            self.send(chat_id, f"Всё управление теперь в приложении — нажмите «{BTN_APP}» внизу чата.", self.main_kb())
             return True
         pend = self._pending().get(chat_id)
         if not pend or text.startswith("/"):
@@ -462,8 +444,9 @@ class TelegramUI:
         try:
             if pend["field"] == "new":
                 w = self._create(text)
-                self.send(chat_id, "✅ Добавлено! Настройте условия кнопками ниже. Первые результаты пришлю после ближайшей проверки.\n\n"
-                          + self.card_text(w), self.card_kb(w))
+                self.send(chat_id, f"✅ Добавлено: <b>{esc(w.name)}</b>\n{esc(w.describe())}\n\n"
+                          "Первые результаты пришлю после ближайшей проверки. Условия можно поменять в приложении — "
+                          f"кнопка «{BTN_APP}» внизу.", self.main_kb())
                 return True
             w = self._find(pend["h"])
             if not w:

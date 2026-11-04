@@ -148,11 +148,6 @@ def test_mini_app_roundtrip(monkeypatch):
     class R:
         def __init__(self, code): self.status_code = code
 
-    ui_mod._APP_URL_CACHE.clear()
-    monkeypatch.setattr("requests.head", lambda *a, **k: R(404))      # Pages not switched on -> githack
-    assert ui_mod.app_url() == "https://raw.githack.com/DimaDerepa/bfbot2/main/docs/app/index.html"
-    ui_mod._APP_URL_CACHE.clear()
-    monkeypatch.setattr("requests.head", lambda *a, **k: R(200))      # Pages on -> github.io
     url = cp.ui.main_kb()["keyboard"][0][0]["web_app"]["url"]
     assert url.startswith("https://dimaderepa.github.io/bfbot2/app/?d=")
     assert cp.ui.webapp_snapshot()["r"] == "DimaDerepa/bfbot2"
