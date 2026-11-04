@@ -305,7 +305,7 @@ class TelegramUI:
         if not text.strip().lower().startswith(("http://", "https://")):
             from . import ai
 
-            if ai.enabled() and (nlp_ru.looks_natural(text) or len(text.split()) > 3):
+            if ai.enabled():
                 data = ai.parse_request(text)
                 if data:
                     spec = ai.spec_from_ai(data, text)
@@ -321,6 +321,10 @@ class TelegramUI:
             raise ValueError("Не понял, что искать. Напишите, например: <code>iphone 16 pro 256gb</code>")
         spec.setdefault("name", spec.get("query") or spec["urls"][0])
         w = watch_from_dict(spec, origin="telegram")
+        for x in self.engine.all_watches():   # the same request twice (double tap, app + chat) -> keep one
+            if (x.query or "") == (w.query or "") and x.max_price == w.max_price and x.min_price == w.min_price \
+                    and sorted(x.exclude) == sorted(w.exclude) and x.urls == w.urls:
+                raise ValueError(f"«{esc(x.name)}» уже отслеживается.")
         existing = {x.id for x in self.engine.all_watches()}
         base, n = w.id, 2
         while w.id in existing:

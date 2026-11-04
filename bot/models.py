@@ -71,6 +71,7 @@ class Watch:
     intent: Optional[str] = None              # the user's original request (for the AI judge)
     ai: bool = False                          # judge titles with Claude when ANTHROPIC_API_KEY is set
     storage_min: Optional[int] = None
+    screen_inch: Optional[int] = None         # TVs / monitors / laptops: diagonal (from '55"', '139 cm', '55C61K')
     notes: Optional[str] = None               # other requirements for the AI judge
     origin: str = "config"                    # "config" | "telegram"
     id: str = ""
@@ -78,7 +79,7 @@ class Watch:
     def __post_init__(self) -> None:
         from .text import slug
 
-        for f in ("ram_min", "year_min", "pages", "storage_min"):
+        for f in ("ram_min", "year_min", "pages", "storage_min", "screen_inch"):
             v = getattr(self, f)
             if v in ("", 0):
                 setattr(self, f, None)
@@ -111,6 +112,8 @@ class Watch:
             parts.append(f"ОЗУ ≥{self.ram_min} ГБ")
         if self.year_min:
             parts.append(f"модель {self.year_min}+")
+        if self.screen_inch:
+            parts.append(f'{self.screen_inch}"')
         if self.must_include:
             parts.append("+" + " +".join(self.must_include))
         if self.any_of:

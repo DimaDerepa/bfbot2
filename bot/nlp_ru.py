@@ -79,6 +79,12 @@ def _amount(num: str, mult: str = "") -> Optional[float]:
 _OPERATOR_WORDS = re.compile(r"\b(до|от|скидк\w*|лей|леев|лея|гб|тб|и|или)\b", re.I)
 
 
+def anchored(rx_term: str) -> str:
+    """'re:televizor|tv' -> product-type regex that must match within the first three title words."""
+    body = rx_term[3:] if rx_term.startswith("re:") else rx_term
+    return "re:^(?:\\S+\\s+){0,2}(?:" + body + ")"
+
+
 def looks_natural(text: str) -> bool:
     """Russian description (needs this parser) vs. compact syntax that only uses до/от/скидка as operators."""
     return has_cyrillic(_OPERATOR_WORDS.sub(" ", text or ""))
@@ -115,6 +121,11 @@ def parse(text: str) -> dict[str, Any]:
         re.search(r"(\d{1,2})\s*%\s*скидк\w*", low)
     if m:
         spec["min_discount"] = float(m.group(1))
+        take(m)
+    # --- screen size: 55 дюймов / 55" / 55 inch
+    m = re.search(r"(\d{2,3})\s*(?:дюйм\w*|\"|”|inch\w*|in\b)", low)
+    if m:
+        spec["screen_inch"] = int(m.group(1))
         take(m)
     # --- RAM
     m = re.search(r"(\d{1,2})\s*(?:гб|gb|гиг\w*)?\s*(?:оперативк\w*|оперативной памяти|озу|ram)", low) or \
@@ -183,9 +194,22 @@ def parse(text: str) -> dict[str, Any]:
     query_words: list[str] = []
     if category:
         query_words.append(category[0])
-        spec.setdefault("must_include", []).insert(0, category[1])
+        # the product type must be how the title STARTS ("Televizor ...", "Telefon mobil ...") — this is what
+        # keeps "Suport TV", "Telecomanda TV", "Husa telefon" out
+        spec.setdefault("must_include", []).insert(0, anchored(category[1]))
         spec["categories"] = [category[2]]
+        if category[0] in ("televizor", "monitor") and not spec.get("screen_inch"):
+            nums = [w for w in latin if w.isdigit() and 19 <= int(w) <= 100]
+            if nums:
+                spec["screen_inch"] = int(nums[0])
+                latin = [w for w in latin if w != nums[0]]
     query_words += latin
+    # every Latin word the user typed (oled, rtx, 5070, s25 ...) must appear in the title
+    for w in latin:
+        if w not in spec.get("must_include", []) and len(w) >= 2:
+            spec.setdefault("must_include", []).append(w)
+    if spec.get("screen_inch") and category and category[0] in ("televizor", "monitor"):
+        query_words.append(str(spec["screen_inch"]))
     if brands_pos:
         if len(brands_pos) == 1 and not latin:
             query_words.append(brands_pos[0])
@@ -200,6 +224,7 @@ def parse(text: str) -> dict[str, Any]:
     if not query_words:
         raise ValueError("Не понял, что искать. Пример: <code>телефон 12 гб оперативки до 1000$</code> или <code>rtx 5070 до 3000</code>")
     spec["query"] = " ".join(dict.fromkeys(query_words))
+    spec["intent"] = " ".join(text.split())[:300]
     if category or spec.get("ram_min") or spec.get("year_min"):
         spec["pages"] = 3          # parameter search: look deeper than the first result page
     return spec

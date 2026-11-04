@@ -164,7 +164,9 @@ def _key(title: str) -> str:
 
 
 def _requirements(w) -> str:
-    parts = [f"Request: {w.intent or w.query}"]
+    parts = [f"Request: {w.intent or w.name or w.query}", f"Shop search query: {w.query}"]
+    if getattr(w, "screen_inch", None):
+        parts.append(f"screen diagonal about {w.screen_inch} inch")
     if getattr(w, "ram_min", None):
         parts.append(f"RAM >= {w.ram_min} GB")
     if getattr(w, "storage_min", None):
@@ -211,4 +213,67 @@ def verdicts(state, w, titles: list[str]) -> dict[str, dict]:
                     t = chunk[idx]
                     cache[_key(t)] = [bool(it.get("match")), it.get("year"), it.get("ram_gb"), int(time.time())]
                     out[t] = {"match": bool(it.get("match")), "year": it.get("year"), "ram_gb": it.get("ram_gb")}
+    return out
+
+
+# ------------------------------------------------------------------ output gate (last check before alerting)
+GATE_SCHEMA = {
+    "type": "object",
+    "properties": {"items": {"type": "array", "items": {
+        "type": "object",
+        "properties": {"i": {"type": "integer"}, "ok": {"type": "boolean"}, "why": {"type": "string"}},
+        "required": ["i", "ok", "why"], "additionalProperties": False}}},
+    "required": ["items"], "additionalProperties": False,
+}
+GATE_SYSTEM = (
+    "You are the final quality gate of a deal-alert bot for Romanian online shops. The user will receive a Telegram "
+    "alert for every listing you approve, so be strict: ok=true only if the listing is EXACTLY the kind of product the "
+    "user asked for and meets every stated requirement (type, model, size/diagonal, specs, year, brand rules, "
+    "exclusions, price limits). Reject: accessories, spare parts, remotes, mounts, cables, cases, cleaning kits, "
+    "services, warranties, bundles built around another product, wrong size/variant, refurbished/resigilat unless "
+    "asked, and prices that are implausible for that product (far too low -> accessory/part/error/scam, or a fake "
+    "'old price'). When in doubt, reject. why: max 8 words."
+)
+
+
+def gate(state, w, offers: list) -> dict:
+    """offer.key -> True/False for the offers about to be sent (cached per offer and price)."""
+    if not enabled() or not offers:
+        return {}
+    cache = state.data.setdefault("ai_gate", {}).setdefault(w.id, {})
+    sig = _key(_requirements(w) + f"|{w.min_price}|{w.max_price}|{w.min_discount}")
+    if cache.get("_sig") != sig:
+        cache.clear()
+        cache["_sig"] = sig
+    out: dict = {}
+    todo = []
+    for o in offers:
+        ck = _key(f"{o.key}|{int(o.price)}")
+        if ck in cache:
+            out[o.key] = cache[ck]
+        else:
+            todo.append((ck, o))
+    limits = []
+    if w.max_price:
+        limits.append(f"price <= {w.max_price:g} RON")
+    if w.min_price:
+        limits.append(f"price >= {w.min_price:g} RON")
+    if w.min_discount:
+        limits.append(f"discount >= {w.min_discount:g}%")
+    req = _requirements(w) + ("\nPrice rules: " + ", ".join(limits) if limits else "")
+    for i in range(0, len(todo), 30):
+        chunk = todo[i:i + 30]
+        lines = []
+        for n, (_, o) in enumerate(chunk):
+            old = f", old price {o.old_price:g}" if o.old_price else ""
+            lines.append(f"{n}. {o.title} | {o.price:g} RON{old} | shop {o.store} | {o.url}")
+        data = _json_call(CLASSIFY_MODEL, GATE_SYSTEM, f"{req}\n\nListings:\n" + "\n".join(lines), GATE_SCHEMA, 3000, "low")
+        if not data:
+            break   # API trouble: fail open (the rule-based checks already passed these)
+        for it in data.get("items", []):
+            idx = it.get("i")
+            if isinstance(idx, int) and 0 <= idx < len(chunk):
+                ck, o = chunk[idx]
+                cache[ck] = bool(it.get("ok"))
+                out[o.key] = cache[ck]
     return out

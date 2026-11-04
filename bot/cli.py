@@ -52,6 +52,47 @@ UI_VERSION = 5
 UI_NEWS = ("🆕 <b>Новое приложение.</b> Нажмите кнопку <b>🎯 Открыть приложение</b> внизу чата: там все товары с лучшими "
            "ценами, условия, магазины и настройки. Добавить товар можно на вкладке ➕ или просто написав мне, что ищете, "
            "обычными словами. Теперь я отвечаю сразу.")
+SPEC_VERSION = 2
+
+
+def _migrate_watches(state) -> None:
+    """Re-derive the criteria of Telegram watches with the stricter rules (product type at the start of the
+    title, every Latin word required, screen size), drop exact duplicates and forget their old (loose) matches."""
+    from . import nlp_ru
+    from .text import has_cyrillic
+
+    seen: set = set()
+    keep = []
+    changed = []
+    for d in state.data.get("watches", []):
+        sig = (d.get("query"), d.get("max_price"), d.get("min_price"), tuple(sorted(d.get("exclude") or [])), tuple(d.get("urls") or []))
+        if sig in seen:
+            state.forget_watch(d.get("id", ""))
+            continue
+        seen.add(sig)
+        text = d.get("intent") or d.get("name") or ""
+        if not d.get("ai") and has_cyrillic(text):
+            try:
+                spec = nlp_ru.parse(text.rstrip("…"))
+            except ValueError:
+                spec = {}
+            for k in ("must_include", "screen_inch", "ram_min", "year_min", "categories", "intent"):
+                if spec.get(k):
+                    d[k] = spec[k]
+            for k in ("exclude", "any_of"):
+                if spec.get(k):
+                    d[k] = sorted(set(d.get(k) or []) | set(spec[k]))
+            changed.append(d.get("id"))
+        keep.append(d)
+    state.data["watches"] = keep
+    for wid in changed:
+        state.forget_watch(wid)          # old loose matches out; a fresh, clean digest follows
+    state.data["spec_version"] = SPEC_VERSION
+    if changed:
+        state.data.setdefault("notices", []).append(
+            "🔧 Фильтры стали строже: я перепроверил ваши товары и пришлю новые подборки без аксессуаров и лишнего.")
+
+
 HOME_KEYS = ("offers", "initialized", "stores", "runs", "last_run", "last_summary", "url_fail", "events_applied")
 
 
@@ -92,6 +133,8 @@ def cmd_run(args) -> int:
     cp = CommandProcessor(engine, mode="actions")
     listen = 0.0 if (home_mode or args.dry_run) else float(os.environ.get("BOT_LISTEN_MINUTES") or 0) * 60
     t_end = time.time() + listen
+    if not home_mode and state.data.get("spec_version", 0) < SPEC_VERSION:
+        _migrate_watches(state)
     if not home_mode and state.get("telegram", "chat_id") and state.data.get("ui_version") != UI_VERSION:
         # one-time hello after an update: delivers the new menu (with the Mini App button) without any /command
         state.data.setdefault("notices", []).append(UI_NEWS)

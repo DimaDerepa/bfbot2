@@ -392,6 +392,8 @@ class Engine:
                 if not any_store_ok:
                     continue  # nothing fetched yet; keep the watch un-initialised
                 new_alerts = sorted([a for a in alerts if a.kind in ("new", "rematch")], key=lambda a: a.offer.price)
+                new_alerts = self._gate(w, new_alerts, keep=top_n)
+                alerts = [a for a in alerts if a.kind not in ("new", "rematch") or a in new_alerts]
                 if new_alerts:
                     msg = format_alerts(w.name, new_alerts[:top_n], self.store_names, digest=True,
                                         total_matches=len(new_alerts))
@@ -414,6 +416,7 @@ class Engine:
             if alerts:
                 # cheapest first; everything is marked as notified so nothing trickles in later runs
                 alerts.sort(key=lambda a: a.offer.price)
+                alerts = self._gate(w, alerts, keep=limit)
                 send, rest = alerts[:limit], alerts[limit:]
                 msg = format_alerts(w.name, send, self.store_names)
                 if rest:
@@ -448,13 +451,38 @@ class Engine:
         return summary
 
     # ------------------------------------------------------------------ health messages
-    def _ai_judge(self, w: Watch, candidates: list) -> dict:
-        """Claude verdicts for titles that already pass the cheap price/stock rules (cached per watch)."""
-        if not w.ai:
-            return {}
+    def _gate(self, w: Watch, alerts: list, keep: int) -> list:
+        """Claude's last look at what is about to be sent. Rejected offers are recorded as not matching and
+        silently marked notified, so they never reach the user (or the Mini App's best-price list)."""
         from . import ai
 
-        if not ai.enabled():
+        if not alerts or not ai.enabled():
+            return alerts
+        head = alerts[: max(keep * 2, keep + 6)]      # judge the ones that would actually be shown, plus spares
+        try:
+            verdict = ai.gate(self.state, w, [a.offer for a in head])
+        except Exception as e:
+            log.warning("AI gate failed for %s: %s", w.id, e)
+            return alerts
+        out = []
+        for a in alerts:
+            if verdict.get(a.offer.key) is False:
+                rec = self.state.offers.get(self.state.rec_key(w, a.offer))
+                if rec is not None:
+                    rec["m"] = False
+                    rec["np"] = a.offer.price
+                    rec["rej"] = 1
+                continue
+            out.append(a)
+        if len(out) != len(alerts):
+            log.info("AI gate %s: %d of %d offers rejected", w.id, len(alerts) - len(out), len(alerts))
+        return out
+
+    def _ai_judge(self, w: Watch, candidates: list) -> dict:
+        """Claude verdicts for titles that already pass the cheap price/stock rules (cached per watch)."""
+        from . import ai
+
+        if not ai.enabled():   # with a key, Claude judges every watch (not only the ones it parsed)
             return {}
         titles = []
         for o, check_title in candidates:

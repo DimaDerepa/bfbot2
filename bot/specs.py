@@ -108,6 +108,32 @@ def release_year(title: str) -> Optional[int]:
     return None
 
 
+_INCH_RX = [re.compile(r"(?<![\d.])(\d{2,3}(?:[.,]\d)?)\s*(?:inch|inchi|\"|”|″|''|in\b|toli)", re.I)]
+_CM_RX = re.compile(r"(?<![\d.])(\d{2,3})\s*cm\b", re.I)
+_CODE_RX = re.compile(r"(?<![0-9a-z])(?:oled|qled|qned|ue|qe|kd|xr|tx|tq|tu|un)?(\d{2})(?=[a-z]{1,6}\d)", re.I)
+
+
+def screen_inches(title: str) -> Optional[float]:
+    t = (title or "").replace("\u00a0", " ")
+    for rx in _INCH_RX:
+        m = rx.search(t)
+        if m:
+            v = float(m.group(1).replace(",", "."))
+            if 10 <= v <= 120:
+                return v
+    m = _CM_RX.search(t)
+    if m:
+        v = int(m.group(1)) / 2.54
+        if 20 <= v <= 120:
+            return round(v, 1)
+    m = _CODE_RX.search(t.lower())
+    if m:
+        v = int(m.group(1))
+        if 24 <= v <= 100:
+            return float(v)
+    return None
+
+
 def spec_reasons(watch, title: str) -> list[str]:
     """Reasons why `title` fails the watch's spec criteria (empty list = passes)."""
     reasons: list[str] = []
@@ -120,6 +146,14 @@ def spec_reasons(watch, title: str) -> list[str]:
                 reasons.append("ОЗУ не указана")
         elif r < ram_min:
             reasons.append(f"ОЗУ {r} ГБ")
+    inch = getattr(watch, "screen_inch", None)
+    if inch:
+        v = screen_inches(title)
+        if v is None:
+            if not unknown_ok:
+                reasons.append("диагональ не указана")
+        elif abs(v - inch) > 1.5:
+            reasons.append(f'диагональ {v:g}"')
     year_min = getattr(watch, "year_min", None)
     if year_min:
         y = release_year(title)

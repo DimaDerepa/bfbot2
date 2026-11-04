@@ -180,3 +180,58 @@ def test_mini_app_copies_in_sync():
     a = open(os.path.join(root, "app", "index.html"), encoding="utf-8").read()
     b = open(os.path.join(root, "docs", "app", "index.html"), encoding="utf-8").read()
     assert a == b, "app/index.html and docs/app/index.html must be identical (GitHub Pages may serve either)"
+
+
+def test_output_gate_blocks_rejected_offers(monkeypatch):
+    from bot import ai
+    from bot.models import Offer
+    from bot.stores.base import Store
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
+
+    def fake_json_call(model, system, user, schema, max_tokens, effort):
+        if "Titles:" in user:      # title judge: everything looks like a TV by title
+            n = len(user.split("Titles:\n", 1)[1].splitlines())
+            return {"items": [{"i": i, "match": True, "year": None, "ram_gb": None, "why": ""} for i in range(n)]}
+        if "Listings:" in user:    # output gate: rejects the implausibly cheap one
+            rows = user.split("Listings:\n", 1)[1].splitlines()
+            return {"items": [{"i": i, "ok": " 49 RON" not in r, "why": ""} for i, r in enumerate(rows)]}
+        return None                # request parsing unavailable -> rule-based parser
+
+    monkeypatch.setattr(ai, "_json_call", fake_json_call)
+
+    class Shop(Store):
+        key, name, base_url, categories = "shop", "Shop", "https://shop.ro", ("general",)
+
+        def search_page(self, q, page):
+            return [Offer(store="shop", title="Televizor OLED LG 55C46LA, 139 cm, Smart 4K", url="https://shop.ro/1", price=3999, offer_id="1"),
+                    Offer(store="shop", title="Televizor OLED Samsung 55S90D, 138 cm", url="https://shop.ro/2", price=49, offer_id="2")] if page == 1 else []
+
+    tg = TG()
+    e = Engine(Config(Settings(), []), State.load(""), tg)
+    e.reg, e.store_names = {"shop": Shop}, {"shop": "Shop"}
+    cp = CommandProcessor(e)
+    tg.updates = [msg(1, "/start"), msg(2, "телевизор oled 55 дюймов до 4500"), msg(3, "телевизор oled 55 дюймов до 4500")]
+    cp.poll()
+    assert len(e.all_watches()) == 1                                   # duplicate request ignored
+    assert any("уже отслеживается" in t for t in texts(tg))
+    e.run_cycle()
+    digest = [t for t in texts(tg) if "найдено" in t][-1]
+    assert "55C46LA" in digest and "55S90D" not in digest
+    e.run_cycle()
+    assert not any("55S90D" in t for t in texts(tg))                   # rejected offer never comes back
+
+
+def test_migration_tightens_old_watches():
+    from bot.cli import _migrate_watches
+
+    st = State.load("")
+    old = {"id": "tv", "name": "телевизор oled 55 дюймов до 4500", "query": "televizor oled 55", "max_price": 4500.0,
+           "must_include": ["re:televizor|smart tv|\\btv\\b"], "exclude": []}
+    st.data["watches"] = [old, dict(old, id="tv-2")]
+    st.data["offers"] = {"tv|x::1": {"t": "Suport TV", "p": 39, "m": True, "ls": 1}}
+    _migrate_watches(st)
+    assert [d["id"] for d in st.data["watches"]] == ["tv"]
+    d = st.data["watches"][0]
+    assert d["screen_inch"] == 55 and "oled" in d["must_include"] and d["must_include"][0].startswith("re:^")
+    assert st.data["offers"] == {} and st.data["notices"]
