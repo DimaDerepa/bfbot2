@@ -95,11 +95,14 @@ def test_ai_watch_uses_claude_verdicts(monkeypatch):
 
     def fake_json_call(model, system, user, schema, max_tokens, effort):
         calls.append(user)
+        if "Listings:" in user:     # output gate: approve everything
+            rows = user.split("Listings:\n", 1)[1].splitlines()
+            return {"items": [{"i": i, "ok": True, "why": ""} for i in range(len(rows))]}
         if "Titles:" not in user:   # request parsing
-            return {"search_queries": ["telefon 12gb ram", "smartphone 12gb"], "product_type": "telefon", "category": "electronics",
+            return {"watches": [{"search_queries": ["telefon 12gb ram", "smartphone 12gb"], "product_type": "telefon", "category": "electronics",
                     "max_price": 1000, "min_price": None, "currency": "USD", "min_discount_pct": 20, "ram_min_gb": 12,
                     "storage_min_gb": None, "year_min": 2025, "brands_include": [], "brands_exclude": ["motorola"],
-                    "exclude_words": [], "other_requirements": "", "summary_ru": "Телефон 12 ГБ, 2025+"}
+                    "exclude_words": [], "other_requirements": "", "summary_ru": "Телефон 12 ГБ, 2025+"}]}
         titles = [l.split(". ", 1)[1] for l in user.split("Titles:\n", 1)[1].splitlines()]
         return {"items": [{"i": i, "match": "Galaxy S25" in t, "year": 2025, "ram_gb": 12, "why": ""} for i, t in enumerate(titles)]}
 
@@ -235,3 +238,36 @@ def test_migration_tightens_old_watches():
     d = st.data["watches"][0]
     assert d["screen_inch"] == 55 and "oled" in d["must_include"] and d["must_include"][0].startswith("re:^")
     assert st.data["offers"] == {} and st.data["notices"]
+
+
+def test_claude_splits_multi_product_request_and_reparses_old_watches(monkeypatch):
+    from bot import ai
+    from bot.cli import _ai_reparse
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
+    base = {"product_type": "", "category": "electronics", "max_price": None, "min_price": None, "currency": "RON",
+            "min_discount_pct": None, "ram_min_gb": None, "storage_min_gb": None, "year_min": None, "brands_include": [],
+            "brands_exclude": [], "exclude_words": [], "other_requirements": ""}
+
+    def fake(model, system, user, schema, max_tokens, effort):
+        if "televizor" in user.lower() or "телевизор" in user.lower():
+            return {"watches": [dict(base, search_queries=["televizor oled 55"], summary_ru="OLED 55", max_price=4500,
+                                     other_requirements="OLED panel only, 55 inch")]}
+        return {"watches": [dict(base, search_queries=["placa video rtx 5070"], summary_ru="RTX 5070", max_price=3000),
+                            dict(base, search_queries=["monitor 27 oled"], summary_ru="Монитор OLED 27", max_price=2500)]}
+
+    monkeypatch.setattr(ai, "_json_call", fake)
+    tg = TG()
+    st = State.load("")
+    st.data["watches"] = [{"id": "tv", "name": "телевизор oled 55 дюймов до 4500", "query": "televizor oled 55",
+                           "max_price": 4500.0, "must_include": ["re:^(?:\\S+\\s+){0,2}(?:televizor)", "oled"], "screen_inch": 55}]
+    _ai_reparse(st)
+    d = st.data["watches"][0]
+    assert d["ai"] and d["id"] == "tv" and d["name"] == "OLED 55" and "must_include" not in d and d["notes"]
+    e = Engine(Config(Settings(), []), st, tg)
+    cp = CommandProcessor(e)
+    tg.updates = [msg(1, "/start"), msg(2, "хочу видеокарту rtx 5070 до 3000 и ещё oled монитор 27 дюймов до 2500")]
+    cp.poll()
+    names = [w.name for w in e.all_watches()]
+    assert names == ["OLED 55", "RTX 5070", "Монитор OLED 27"]      # the re-parsed watch still loads
+    assert any("RTX 5070" in t and "Монитор OLED 27" in t for t in texts(tg))

@@ -93,6 +93,46 @@ def _migrate_watches(state) -> None:
             "🔧 Фильтры стали строже: я перепроверил ваши товары и пришлю новые подборки без аксессуаров и лишнего.")
 
 
+def _ai_reparse(state) -> None:
+    """Once a Claude key is available, let Claude re-read every Telegram watch from the user's own words."""
+    from . import ai
+    from .config import watch_from_dict
+
+    if not ai.enabled():
+        return
+    redone = []
+    tried = state.data.setdefault("ai_reparsed", [])
+    for d in state.data.get("watches", []):
+        if d.get("ai") or d.get("id") in tried:
+            continue
+        text = (d.get("intent") or d.get("name") or d.get("query") or "").strip()
+        tried.append(d.get("id"))
+        if not text or d.get("urls"):
+            continue
+        parsed = ai.parse_requests(text)
+        if not parsed:
+            continue
+        spec = ai.spec_from_ai(parsed[0], text)
+        trial = {**{k: v for k, v in d.items() if k not in ("origin",)}, **spec, "id": d.get("id")}
+        for k in ("must_include", "screen_inch", "ram_min", "year_min"):   # Claude's spec replaces the rule-based one
+            if k not in spec:
+                trial.pop(k, None)
+        try:
+            watch_from_dict(trial, origin="telegram")
+        except (ValueError, TypeError):
+            continue
+        d.clear()
+        d.update(trial)
+        state.forget_watch(d["id"])
+        redone.append(d.get("name") or text)
+    if redone:
+        from .notify import esc
+
+        state.data.setdefault("notices", []).append(
+            "🤖 Claude заново разобрал ваши запросы и будет проверять каждое предложение: "
+            + ", ".join(f"<b>{esc(n)}</b>" for n in redone) + ". Скоро пришлю новые подборки.")
+
+
 HOME_KEYS = ("offers", "initialized", "stores", "runs", "last_run", "last_summary", "url_fail", "events_applied")
 
 
@@ -135,6 +175,8 @@ def cmd_run(args) -> int:
     t_end = time.time() + listen
     if not home_mode and state.data.get("spec_version", 0) < SPEC_VERSION:
         _migrate_watches(state)
+    if not home_mode and not args.dry_run:
+        _ai_reparse(state)
     if not home_mode and state.get("telegram", "chat_id") and state.data.get("ui_version") != UI_VERSION:
         # one-time hello after an update: delivers the new menu (with the Mini App button) without any /command
         state.data.setdefault("notices", []).append(UI_NEWS)

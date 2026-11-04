@@ -88,23 +88,39 @@ PARSE_SCHEMA = {
                  "other_requirements", "summary_ru"],
     "additionalProperties": False,
 }
+PARSE_MULTI_SCHEMA = {
+    "type": "object",
+    "properties": {"watches": {"type": "array", "items": PARSE_SCHEMA,
+                               "description": "one entry per distinct product the user wants tracked (usually 1)"}},
+    "required": ["watches"], "additionalProperties": False,
+}
 PARSE_SYSTEM = (
     "You turn a shopper's request (usually Russian, sometimes Romanian/English) into a structured watch for a bot that "
     "searches Romanian online shops (eMAG, Altex, Flanco, PC Garage, ...) for Black Friday deals. Shop titles are in "
     "Romanian, e.g. 'Telefon mobil Samsung Galaxy S25, 12GB RAM, 256GB, 5G'. search_queries must be what a person types "
     "into those shops' search boxes (Romanian words, brand/model names, specs like '12gb ram'); keep them short and broad "
     "enough to list many matching products. Prices: keep the number and the currency the user used. 'не X' / 'без X' / "
-    "'кроме X' are exclusions. Use null when the user did not ask for something. Brand names in lowercase Latin."
+    "'кроме X' are exclusions. Use null when the user did not ask for something. Brand names in lowercase Latin. "
+    "Read long requests carefully and keep every condition (sizes, generations, chips, colours, conditions like 'new "
+    "only', budget in any currency). If the message asks for several different products, return one watch per product; "
+    "conditions said once for all of them apply to each. Put conditions that do not fit a field into "
+    "other_requirements, in precise English, so a later checker can verify listings against them."
 )
 
 
-def parse_request(text: str) -> Optional[dict]:
+def parse_requests(text: str) -> list[dict]:
+    """Free text -> one parsed spec per product the user wants tracked ([] if Claude is unavailable)."""
     if not enabled():
-        return None
-    data = _json_call(PARSE_MODEL, PARSE_SYSTEM, text, PARSE_SCHEMA, 2000, "medium")
-    if not data or not data.get("search_queries"):
-        return None
-    return data
+        return []
+    data = _json_call(PARSE_MODEL, PARSE_SYSTEM, text, PARSE_MULTI_SCHEMA, 12000, "medium")
+    out = [w for w in (data or {}).get("watches", []) if w.get("search_queries")][:5]
+    log.info("claude parsed request into %d watch(es)", len(out))
+    return out
+
+
+def parse_request(text: str) -> Optional[dict]:
+    got = parse_requests(text)
+    return got[0] if got else None
 
 
 def spec_from_ai(data: dict, original: str) -> dict:
@@ -199,12 +215,13 @@ def verdicts(state, w, titles: list[str]) -> dict[str, dict]:
             todo.append(t)
     if todo and enabled():
         todo = todo[:MAX_NEW_PER_WATCH]
+        log.info("claude judging %d new titles for %s", len(todo), w.id)
         req = _requirements(w)
         for i in range(0, len(todo), BATCH):
             chunk = todo[i:i + BATCH]
             listing = "\n".join(f"{n}. {t}" for n, t in enumerate(chunk))
             data = _json_call(CLASSIFY_MODEL, CLASSIFY_SYSTEM, f"{req}\n\nTitles:\n{listing}", CLASSIFY_SCHEMA,
-                              4000, "low")
+                              8000, "low")
             if not data:
                 break  # API trouble: the rule-based checks are used for the rest this run
             for it in data.get("items", []):
@@ -267,7 +284,7 @@ def gate(state, w, offers: list) -> dict:
         for n, (_, o) in enumerate(chunk):
             old = f", old price {o.old_price:g}" if o.old_price else ""
             lines.append(f"{n}. {o.title} | {o.price:g} RON{old} | shop {o.store} | {o.url}")
-        data = _json_call(CLASSIFY_MODEL, GATE_SYSTEM, f"{req}\n\nListings:\n" + "\n".join(lines), GATE_SCHEMA, 3000, "low")
+        data = _json_call(CLASSIFY_MODEL, GATE_SYSTEM, f"{req}\n\nListings:\n" + "\n".join(lines), GATE_SCHEMA, 8000, "low")
         if not data:
             break   # API trouble: fail open (the rule-based checks already passed these)
         for it in data.get("items", []):

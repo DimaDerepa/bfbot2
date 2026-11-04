@@ -372,6 +372,8 @@ class Engine:
             for o, check_title in candidates:
                 ref = self.state.reference_price(w, o)
                 v = judged.get(o.title) if check_title else None
+                if v is None and check_title and w.ai and judged.get("__ai_on__"):
+                    continue   # Claude-parsed watch: no verdict yet (API hiccup / per-run cap) -> next run
                 if v is not None:
                     # Claude decided what the product is (type, model year, RAM); only price rules remain
                     res = evaluate(w, o, ref, check_title=False)
@@ -496,10 +498,12 @@ class Engine:
                 continue
             titles.append(o.title)
         try:
-            return ai.verdicts(self.state, w, titles)
+            out = ai.verdicts(self.state, w, titles)
         except Exception as e:   # never let the AI step break a run
             log.warning("AI judge failed for %s: %s", w.id, e)
-            return {}
+            out = {}
+        out["__ai_on__"] = {"match": False}
+        return out
 
     def _store_health(self, runs: dict[str, StoreRun]) -> None:
         threshold = max(1, _setting(self.settings, "store_fail_alert_after", 6, int))

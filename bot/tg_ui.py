@@ -112,6 +112,7 @@ def _words(text: str) -> list[str]:
 
 class TelegramUI:
     BTN_APP_TEXT = BTN_APP
+    _extra_created: list = []
     def __init__(self, cp) -> None:
         self.cp = cp
         self.engine = cp.engine
@@ -224,8 +225,10 @@ class TelegramUI:
                     done.append("⚙️ Настройки сохранены")
                     continue
                 if kind == "add" and str(op.get("text") or "").strip():
+                    self._extra_created = []
                     w = self._create(str(op["text"]))
-                    done.append(f"➕ {esc(w.name)} — {esc(w.describe())}")
+                    for x in [w, *self._extra_created]:
+                        done.append(f"➕ {esc(x.name)} — {esc(x.describe())}")
                     continue
                 w = self._find(str(op.get("h") or ""))
                 if w is None:
@@ -306,17 +309,17 @@ class TelegramUI:
             from . import ai
 
             if ai.enabled():
-                data = ai.parse_request(text)
-                if data:
-                    spec = ai.spec_from_ai(data, text)
-                    try:   # rule-based terms as a safety net if the AI judge is unavailable later
-                        rules = nlp_ru.parse(text) if nlp_ru.looks_natural(text) else {}
-                        if rules.get("must_include"):
-                            spec["must_include"] = rules["must_include"]
-                    except ValueError:
-                        pass
+                parsed = ai.parse_requests(text)
+                if len(parsed) > 1:        # several products in one message -> one watch each
+                    made = [self._create_from_spec(ai.spec_from_ai(d, text)) for d in parsed[1:]]
+                    self._extra_created = made
+                if parsed:
+                    spec = ai.spec_from_ai(parsed[0], text)
         if spec is None:
             spec = nlp_ru.parse(text) if nlp_ru.looks_natural(text) else parse_watch_spec(text)
+        return self._create_from_spec(spec)
+
+    def _create_from_spec(self, spec: dict) -> Watch:
         if not spec.get("query") and not spec.get("urls"):
             raise ValueError("Не понял, что искать. Напишите, например: <code>iphone 16 pro 256gb</code>")
         spec.setdefault("name", spec.get("query") or spec["urls"][0])
@@ -447,8 +450,10 @@ class TelegramUI:
         self._pending().pop(chat_id, None)
         try:
             if pend["field"] == "new":
+                self._extra_created = []
                 w = self._create(text)
-                self.send(chat_id, f"✅ Добавлено: <b>{esc(w.name)}</b>\n{esc(w.describe())}\n\n"
+                extra = "".join(f"\n✅ Добавлено: <b>{esc(x.name)}</b>\n{esc(x.describe())}" for x in self._extra_created)
+                self.send(chat_id, f"✅ Добавлено: <b>{esc(w.name)}</b>\n{esc(w.describe())}{extra}\n\n"
                           "Первые результаты пришлю после ближайшей проверки. Условия можно поменять в приложении — "
                           f"кнопка «{BTN_APP}» внизу.", self.main_kb())
                 return True
