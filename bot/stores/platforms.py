@@ -212,14 +212,44 @@ PLATFORMS: dict[str, type[Store]] = {
 }
 
 
+def _as_list(v: Any) -> list[str]:
+    """YAML list or comma-separated string -> list of lower-case words ("electronics, pc" -> [electronics, pc])."""
+    if v is None:
+        return []
+    if isinstance(v, str):
+        items = v.split(",")
+    elif isinstance(v, (list, tuple, set)):
+        items = [str(x) for x in v if x is not None]
+    else:
+        items = [str(v)]
+    return [x.strip().lower() for x in items if x.strip()]
+
+
+def _as_bool(v: Any, default: bool = True) -> bool:
+    if v is None:
+        return default
+    if isinstance(v, str):
+        return v.strip().lower() not in ("0", "false", "no", "off", "нет", "")
+    return bool(v)
+
+
+def _with_scheme(url: str) -> str:
+    url = url.strip()
+    if url and "://" not in url:
+        url = "https://" + url.lstrip("/")
+    return url
+
+
 def make_custom_store(spec: dict) -> type[Store]:
     """Build a Store subclass from a config.yaml `shops:` entry."""
-    platform = str(spec.get("platform", "html")).lower()
+    if not isinstance(spec, dict):
+        raise ValueError(f"shop {spec!r}: нужен словарь с key / platform / base_url")
+    platform = str(spec.get("platform") or "html").strip().lower()
     base_cls = PLATFORMS.get(platform)
     if base_cls is None:
         raise ValueError(f"shop {spec.get('key')}: неизвестная платформа {platform!r}; варианты: {sorted(PLATFORMS)}")
-    base_url = str(spec.get("base_url") or "").rstrip("/")
-    search_url = spec.get("search_url") or ""
+    base_url = _with_scheme(str(spec.get("base_url") or "")).rstrip("/")
+    search_url = _with_scheme(str(spec.get("search_url") or ""))
     if not base_url and search_url:
         from urllib.parse import urlsplit
 
@@ -227,19 +257,22 @@ def make_custom_store(spec: dict) -> type[Store]:
         base_url = f"{u.scheme}://{u.netloc}"
     if not base_url:
         raise ValueError(f"shop {spec.get('key')}: нужен base_url")
-    key = str(spec.get("key") or base_url.split("//", 1)[-1].split("/")[0].removeprefix("www.").split(".")[0]).lower()
+    host = base_url.split("//", 1)[-1].split("/")[0].lower().removeprefix("www.")
+    if not host:
+        raise ValueError(f"shop {spec.get('key')}: base_url {base_url!r} без адреса сайта")
+    key = str(spec.get("key") or host.split(".")[0]).strip().lower()
     attrs: dict[str, Any] = {
         "key": key,
-        "name": spec.get("name") or key,
+        "name": str(spec.get("name") or key),
         "base_url": base_url,
-        "domains": (base_url.split("//", 1)[-1].split("/")[0].removeprefix("www."),),
-        "categories": tuple(spec.get("categories") or ("general",)),
-        "enabled_by_default": bool(spec.get("enabled", True)),
+        "domains": (host,),
+        "categories": tuple(_as_list(spec.get("categories")) or ("general",)),
+        "enabled_by_default": _as_bool(spec.get("enabled"), True),
     }
     if platform in ("html", "generic"):
         if not search_url:
             raise ValueError(f"shop {key}: для platform: html нужен search_url с {{q}}")
         attrs["search_url"] = search_url
     if platform in ("magento2", "magento") and spec.get("search_path"):
-        attrs["search_path"] = spec["search_path"]
+        attrs["search_path"] = str(spec["search_path"])
     return type(f"Custom_{key}", (base_cls,), attrs)

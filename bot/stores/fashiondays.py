@@ -28,8 +28,9 @@ from bs4 import Tag
 from ..models import Offer
 from .base import Store
 from ._fashion import (
-    NextPager, clean_url, current_price, dedupe, first_el, higher_money_in, image_of, join_title, landed_on_home, norm, num,
-    old_price_in, outermost, pick_price, raise_if_challenge, stock_from_text, text_of,
+    NextPager, best_old, clean_url, current_price, dedupe, first_el, higher_money_in, image_of, join_title,
+    labeled_prices, landed_on_home, norm, num, old_price_in, outermost, pick_price, raise_if_challenge,
+    stock_from_text, text_of,
 )
 
 _PID_RE = re.compile(r"-p(\d{4,}(?:-\d{1,3})?)/?$")
@@ -64,16 +65,17 @@ class FashionDaysStore(NextPager, Store):
             raise_if_challenge(html, soup, final)
             self.last_strategy = "redirect:home"
             return []
+        if urlsplit(final).path.startswith("/p/"):
+            # the search redirected to one product: its "similar products" cards are other products
+            o = self.product_from_html(html, final)
+            if o is not None:
+                self.last_strategy = "product-page"
+                return [o]
         cards = outermost(soup.select("li.product-card"))
         out = dedupe(self._card(c) for c in cards)
         if out:
             self.last_strategy = "gtm-cards"
             return out
-        if urlsplit(final).path.startswith("/p/"):
-            o = self.product_from_html(html, final)
-            if o is not None:
-                self.last_strategy = "product-page"
-                return [o]
         raise_if_challenge(html, soup, final)
         return self.fallback(html, final, soup)
 
@@ -112,10 +114,13 @@ class FashionDaysStore(NextPager, Store):
             return None
         if price_el is None:
             price_el = c.select_one(".new-price, .price-new, [class*='new-price']")
+        box = c.select_one(".product-card-price, .product-card-prices, [class*='prices'], [class*='price-box']") or c
         old = old_price_in(c, price, exclude=[price_el])
         if not old:
-            box = c.select_one(".product-card-price, .product-card-prices, [class*='prices'], [class*='price-box']") or c
             old = higher_money_in(box, price)
+        # labelled lines win: EU Omnibus "Cel mai mic preț din ultimele 30 de zile" > struck / "PRP" price
+        orig_lbl, low = labeled_prices(text_of(el) for el in box.find_all(True) if el.find(["div", "p", "li"]) is None)
+        old = best_old(price, orig_lbl or old, low) if (orig_lbl or low) else old
         status = norm(gtm.get("data-gtm-status"))
         stock: Optional[bool] = None
         if status:
@@ -157,6 +162,10 @@ class FashionDaysStore(NextPager, Store):
         resp = self.http.get(url)
         self.last_raw = resp.text
         o = self.product_from_html(resp.text, url)
-        if o is not None:
-            o.url = url
+        if o is None:
+            from ..extract import make_soup
+
+            raise_if_challenge(resp.text, make_soup(resp.text), url)
+            return None
+        o.url = url
         return o

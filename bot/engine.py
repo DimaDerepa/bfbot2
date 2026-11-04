@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import inspect
 import logging
+import os
 import time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -92,6 +93,13 @@ class Engine:
         self.dry_run = dry_run
         self.reg = registry(self.settings.shops)
         self.store_names = {k: c.name for k, c in self.reg.items()}
+        # hybrid mode: the home runner checks only the shops that block the cloud, the cloud skips them
+        home = set(self.settings.home_stores or [])
+        mode = os.environ.get("BOT_MODE", "").lower()
+        if mode == "home":
+            self.reg = {k: c for k, c in self.reg.items() if k in home}
+        elif os.environ.get("BOT_HOME_ENABLED", "").lower() in ("1", "true", "yes"):
+            self.reg = {k: c for k, c in self.reg.items() if k not in home}
         self._bad_urls: dict[str, str] = {}          # url -> error, for URLs that could not even be parsed
         self._fetch_deadline: Optional[float] = None
 

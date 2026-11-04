@@ -5,7 +5,7 @@ import importlib
 import inspect
 import logging
 import pkgutil
-from typing import Iterable, Optional
+from typing import Any, Optional
 from urllib.parse import urlsplit
 
 from .base import Store
@@ -16,6 +16,7 @@ log = logging.getLogger("bot.stores")
 _SKIP_MODULES = {"base", "platforms"}
 _BUILTIN: dict[str, type[Store]] = {}
 IMPORT_ERRORS: dict[str, str] = {}
+SHOP_ERRORS: dict[str, str] = {}   # settings.shops entries skipped by the last registry() call
 
 
 def _discover() -> None:
@@ -38,15 +39,44 @@ def _discover() -> None:
                 _BUILTIN[obj.key] = obj
 
 
-def registry(custom_shops: Iterable[dict] = ()) -> dict[str, type[Store]]:
+def _shop_specs(custom_shops: Any) -> list:
+    """settings.shops as a list of entries, whatever shape the (hand-written) YAML gave it."""
+    if not custom_shops:
+        return []
+    if isinstance(custom_shops, dict):
+        values = list(custom_shops.values())
+        if values and all(isinstance(v, dict) for v in values):   # {myshop: {platform: ..., base_url: ...}, ...}
+            return [{**v, "key": v.get("key") or k} for k, v in custom_shops.items()]
+        return [custom_shops]                                       # one shop written without the leading "- "
+    if isinstance(custom_shops, (list, tuple)):
+        return list(custom_shops)
+    msg = f"settings.shops: ожидался список магазинов, получено {custom_shops!r}"
+    log.error("%s", msg)
+    SHOP_ERRORS["shops"] = msg
+    return []
+
+
+def registry(custom_shops: Any = ()) -> dict[str, type[Store]]:
+    """Built-in stores plus the custom shops from settings.shops; a bad shop entry is logged and skipped."""
     _discover()
     reg = dict(_BUILTIN)
-    for spec in custom_shops or ():
+    SHOP_ERRORS.clear()
+    for i, spec in enumerate(_shop_specs(custom_shops)):
+        if not isinstance(spec, dict):
+            msg = (f"settings.shops[{i}]: магазин нужно описать полями key / platform / base_url "
+                   f"(см. README), а получено {spec!r}; магазин пропущен")
+            log.error("%s", msg)
+            SHOP_ERRORS[f"shops[{i}]"] = msg
+            continue
         try:
             cls = make_custom_store(spec)
-        except ValueError as e:
-            log.error("%s", e)
+        except Exception as e:  # a typo in one shop must not stop the whole bot
+            msg = str(e) if isinstance(e, ValueError) else f"shop {spec.get('key')!r}: {type(e).__name__}: {e}"
+            log.error("%s; магазин пропущен", msg)
+            SHOP_ERRORS[str(spec.get("key") or f"shops[{i}]")] = msg
             continue
+        if cls.key in _BUILTIN:
+            log.warning("custom shop %r replaces the built-in store with the same key", cls.key)
         reg[cls.key] = cls
     return reg
 
@@ -70,4 +100,5 @@ def web_store_for(url: str) -> type[Store]:
     })
 
 
-__all__ = ["Store", "HtmlSearchStore", "registry", "store_for_url", "web_store_for", "IMPORT_ERRORS"]
+__all__ = ["Store", "HtmlSearchStore", "registry", "store_for_url", "web_store_for", "IMPORT_ERRORS",
+           "SHOP_ERRORS"]

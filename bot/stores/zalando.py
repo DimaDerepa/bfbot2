@@ -33,11 +33,11 @@ import re
 from typing import Any, Optional
 from bs4 import BeautifulSoup
 
-from ..extract import iter_jsonld, make_soup
+from ..extract import availability_flag, iter_jsonld, make_soup
 from ..models import Offer
 from .base import Store
 from ._fashion import (
-    NextPager, best_old, clean_url, dedupe, json_at, join_title, landed_on_home, minor, norm, num, price_lines,
+    NextPager, best_old, clean_url, dedupe, dig, json_at, join_title, landed_on_home, minor, norm, num, price_lines,
     raise_if_challenge, text_of,
 )
 
@@ -121,10 +121,18 @@ def _name(v: Any) -> str:
 
 def _lines_from_module(p: dict) -> list[str]:
     lines: list[str] = []
-    for item in (p.get("displayPriceModule") or {}).get("prices") or []:
-        content = (((item or {}).get("block") or {}).get("content") or []) if isinstance(item, dict) else []
-        lines.append(" ".join(norm(x.get("text")) for x in content if isinstance(x, dict) and x.get("text")))
+    prices = dig(p, "displayPriceModule", "prices")
+    for item in prices if isinstance(prices, list) else []:
+        content = dig(item, "block", "content")
+        if isinstance(content, list):
+            lines.append(" ".join(norm(x.get("text")) for x in content if isinstance(x, dict) and x.get("text")))
     return lines
+
+
+def _is_product_group(obj: dict) -> bool:
+    t = obj.get("@type")
+    types = {str(x).lower() for x in (t if isinstance(t, list) else [t])}
+    return "productgroup" in types or ("product" in types and bool(obj.get("hasVariant")))
 
 
 class ZalandoStore(NextPager, Store):
@@ -159,15 +167,17 @@ class ZalandoStore(NextPager, Store):
                 self._pages = int((entities.get("pageInfo") or {}).get("numberOfPages") or 1)
             except (TypeError, ValueError):
                 self._pages = 1
-        out = self.parse_listing(html, soup, final, cache, entities)
-        if out:
-            return out
-        if page == 1 and zalando_sku(final):
+        if entities is None and page == 1 and zalando_sku(final):
+            # exact-SKU search redirected to the product page: its "you may also like" <article> cards and cache
+            # entries are other products, so the page's own JSON-LD comes first
             o = self.parse_product(html, soup, final)
             if o is not None:
                 o.store_name = self.name
                 self.last_strategy = "product-page"
                 return [o]
+        out = self.parse_listing(html, soup, final, cache, entities)
+        if out:
+            return out
         raise_if_challenge(html, soup, final)
         if page > 1:
             return []
@@ -266,17 +276,14 @@ class ZalandoStore(NextPager, Store):
     # ------------------------------------------------------------------ product page
     def parse_product(self, html: str, soup: BeautifulSoup, url: str) -> Optional[Offer]:
         sku = zalando_sku(url)
-        group = None
-        for obj in iter_jsonld(soup):
-            t = obj.get("@type")
-            types = {str(x).lower() for x in (t if isinstance(t, list) else [t])}
-            if "productgroup" in types or ("product" in types and obj.get("hasVariant")):
-                group = obj
-                break
+        group = next((obj for obj in iter_jsonld(soup) if _is_product_group(obj)), None)
         if group is None:
             return None
+        variants = group.get("hasVariant")
+        if isinstance(variants, dict):
+            variants = [variants]
         best: Optional[tuple[bool, float]] = None
-        for v in group.get("hasVariant") or []:
+        for v in variants if isinstance(variants, list) else []:
             offers = v.get("offers") if isinstance(v, dict) else None
             if isinstance(offers, list):
                 offers = offers[0] if offers else None
@@ -286,7 +293,7 @@ class ZalandoStore(NextPager, Store):
             p = num(offers.get("price"))
             if not p or cur not in ("RON", "LEI"):
                 continue
-            avail = "instock" in str(offers.get("availability") or "").lower()
+            avail = availability_flag(offers.get("availability")) is True   # InStock / LimitedAvailability
             cand = (avail, p)
             if best is None or (cand[0], -cand[1]) > (best[0], -best[1]):
                 best = cand
@@ -298,7 +305,7 @@ class ZalandoStore(NextPager, Store):
             prod = _data(v).get("product")
             simples = prod.get("simples") if isinstance(prod, dict) else None
             for s in simples if isinstance(simples, list) else []:
-                pr = ((s.get("offer") or {}).get("price")) if isinstance(s, dict) else None
+                pr = dig(s, "offer", "price")
                 if isinstance(pr, dict):
                     promo = minor((pr.get("promotional") or {}).get("amount")) if isinstance(pr.get("promotional"), dict) else None
                     o = minor((pr.get("original") or {}).get("amount")) if isinstance(pr.get("original"), dict) else None
@@ -312,7 +319,7 @@ class ZalandoStore(NextPager, Store):
         return Offer(
             store=self.key, title=title, url=clean_url(group.get("url") or url, self.base_url) or url, price=price,
             old_price=orig if orig and orig > price else None, in_stock=in_stock,
-            offer_id=str(group.get("productGroupID") or sku or "") or None,
+            offer_id=str(group.get("productGroupID") or sku or "").upper() or None,
             image=image if isinstance(image, str) else None, source="zalando-pdp",
         )
 
@@ -325,7 +332,9 @@ class ZalandoStore(NextPager, Store):
             from ..extract import extract_product_page
 
             o = extract_product_page(resp.text, url, self.key)
-            if o is not None:
+            if o is None:
+                raise_if_challenge(resp.text, soup, url)
+            else:
                 o.offer_id = zalando_sku(url) or o.offer_id
         if o is not None:
             o.url = url

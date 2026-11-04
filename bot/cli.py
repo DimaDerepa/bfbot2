@@ -48,9 +48,33 @@ def _print_summary(summary: dict) -> None:
         print(f"  [{status}] {k:<14} offers={s['offers']:<4} req={s['requests']:<3} {s['sec']:>5}s{err}")
 
 
+HOME_KEYS = ("offers", "initialized", "stores", "runs", "last_run", "last_summary", "url_fail")
+
+
+def _home_state_path(main_path: str) -> str:
+    return os.environ.get("BOT_HOME_STATE") or os.path.join(os.path.dirname(os.path.abspath(main_path)), "state-home.json")
+
+
 def cmd_run(args) -> int:
     cfg = load_config(args.config)
     state = State.load(args.state)
+    home_mode = os.environ.get("BOT_MODE", "").lower() == "home"
+    home_path = _home_state_path(args.state)
+    if home_mode:
+        # watches/chat come from the main state (read-only here); offers & health live in state-home.json
+        home = State.load(home_path)
+        for k in HOME_KEYS:
+            if k in home.data:
+                state.data[k] = home.data[k]
+            else:
+                state.data.pop(k, None)
+        state._defaults()
+        state.path = home_path
+    elif os.path.exists(home_path):
+        try:
+            state.data["home_offers"] = State.load(home_path).data.get("offers", {})
+        except Exception:
+            pass
     # --dry-run must not touch the real bot: no getUpdates (it would confirm and swallow the production
     # bot's pending commands), no replies, no alerts
     tg = Telegram(None) if args.dry_run else Telegram.from_env()
@@ -58,16 +82,34 @@ def cmd_run(args) -> int:
     if IMPORT_ERRORS:
         print("store import errors:", IMPORT_ERRORS, file=sys.stderr)
     cp = CommandProcessor(engine, mode="actions")
+    listen = 0.0 if (home_mode or args.dry_run) else float(os.environ.get("BOT_LISTEN_MINUTES") or 0) * 60
+    t_end = time.time() + listen
     try:
-        n = cp.poll(timeout=0)
-        if n:
-            log.info("processed %d telegram messages", n)
-        state.save()
+        if not home_mode:
+            n = cp.poll(timeout=0)
+            if n:
+                log.info("processed %d telegram messages", n)
+            state.save()
         summary = engine.run_cycle()
         _print_summary(summary)
-        # commands that arrived while we were checking
-        cp.poll(timeout=0)
+        state.save()
+        # keep answering buttons/commands until the next scheduled run takes over
+        while not home_mode and time.time() < t_end - 5:
+            cp.force_check = False
+            n = cp.poll(timeout=int(max(1, min(25, t_end - time.time() - 3))))
+            if n:
+                state.save()
+                if cp.force_check and t_end - time.time() > 150:
+                    # a product was added/changed: check it right away instead of waiting for the next run
+                    summary = engine.run_cycle()
+                    _print_summary(summary)
+                    state.save()
+            elif n is None:
+                time.sleep(5)
+        if not home_mode:
+            cp.poll(timeout=0)
     finally:
+        state.data.pop("home_offers", None)
         state.save()
     return 0
 

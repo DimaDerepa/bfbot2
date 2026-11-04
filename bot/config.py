@@ -29,6 +29,9 @@ class Settings:
     history_days: int = 45
     interval_minutes: int = 10             # daemon mode only
     store_every: dict = field(default_factory=dict)   # {store_key: N} -> query that store only every N-th run
+    # shops that block GitHub's cloud: checked by the home runner (watch-home.yml) when HOME_RUNNER=true
+    home_stores: list[str] = field(default_factory=lambda: [
+        "emag", "pcgarage", "evomag", "cel", "forit", "vexio", "leroymerlin", "compari", "pricero"])
     quiet_hours: Optional[str] = "23-8"    # Bucharest time: alerts still arrive, but without sound; null = always loud
     shops: list[dict] = field(default_factory=list)   # custom shops (platform adapters)
 

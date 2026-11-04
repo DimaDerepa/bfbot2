@@ -17,7 +17,7 @@ jobs:
   check:
     # Set the repository variable RUNNER=self-hosted to run on your own machine (Romanian home IP).
     runs-on: ${{ vars.RUNNER || 'ubuntu-latest' }}
-    timeout-minutes: 25
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
@@ -39,7 +39,9 @@ jobs:
       # e.g. during a GitHub hiccup: an empty state must never be pushed over the real one.
       - name: Load state
         id: load
-        run: bash scripts/load_state.sh state.json
+        run: |
+          bash scripts/load_state.sh state.json
+          python -m bot.statesync load state-home state-home.json || true
 
       - name: Check prices
         env:
@@ -48,6 +50,8 @@ jobs:
           BOT_PROXY: ${{ secrets.BOT_PROXY }}
           BOT_PROXY_STORES: ${{ vars.BOT_PROXY_STORES }}
           BOT_BROWSER: ${{ vars.BOT_BROWSER }}
+          BOT_HOME_ENABLED: ${{ vars.HOME_RUNNER }}
+          BOT_LISTEN_MINUTES: "8"
         run: python -m bot run --state state.json
 
       - name: Save state

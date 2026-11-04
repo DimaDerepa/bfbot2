@@ -92,7 +92,8 @@ class Telegram:
         log.warning("telegram %s gave up: %s", method, last.get("description"))
         return last
 
-    def send(self, text: str, chat_id: Optional[str] = None, preview: bool = False, silent: bool = False) -> bool:
+    def send(self, text: str, chat_id: Optional[str] = None, preview: bool = False, silent: bool = False,
+             markup: Optional[dict] = None) -> bool:
         """Send `text` (HTML). Returns True when every chunk was accepted by Telegram for at least one target
         (a wrong extra id in TELEGRAM_CHAT_ID must not make every alert repeat for the good one).
         Returns False when nothing could be delivered, including when the bot has no token or no chat."""
@@ -101,16 +102,18 @@ class Telegram:
             print("---- [telegram disabled] ----\n" + text + "\n-----------------------------")
             return False
         delivered_all = True
-        for chunk in split_message(text):
+        chunks = split_message(text)
+        for i, chunk in enumerate(chunks):
             chunk_ok = False
+            extra = {"reply_markup": markup} if markup and i == len(chunks) - 1 else {}
             for cid in targets:
                 res = self.api("sendMessage", chat_id=cid, text=chunk, parse_mode="HTML",
-                               link_preview_options={"is_disabled": not preview}, disable_notification=silent)
+                               link_preview_options={"is_disabled": not preview}, disable_notification=silent, **extra)
                 if not res.get("ok") and "parse" in str(res.get("description", "")).lower():
                     # fall back to plain text if our HTML was rejected
                     log.warning("telegram rejected our HTML (%s); sending plain text", res.get("description"))
                     res = self.api("sendMessage", chat_id=cid, text=_strip_tags(chunk),
-                                   link_preview_options={"is_disabled": True}, disable_notification=silent)
+                                   link_preview_options={"is_disabled": True}, disable_notification=silent, **extra)
                 if res.get("ok"):
                     chunk_ok = True
                     self.sent += 1

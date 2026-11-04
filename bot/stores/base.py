@@ -30,6 +30,8 @@ class Store:
     page_size: ClassVar[int] = 40
     min_delay: ClassVar[float] = 0.0              # store-specific minimum pause between requests (s)
     extra_headers: ClassVar[dict] = {}
+    # curl_cffi TLS/HTTP2 profile pinned for this store (e.g. "chrome124"); None -> env BOT_IMPERSONATE or "chrome"
+    impersonate: ClassVar[Optional[str]] = None
 
     def __init__(self, http: Http, *, max_pages: int = 1) -> None:
         self.http = http

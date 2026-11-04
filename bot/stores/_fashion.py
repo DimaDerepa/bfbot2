@@ -112,16 +112,24 @@ def clean_url(href: Optional[str], base: str, keep: Iterable[str] = ()) -> str:
     return urlunsplit(("https", p.netloc.lower(), p.path or "/", q, ""))
 
 
+_LOCALE_ROOT_RE = re.compile(r"^(?:/[a-z]{2}){1,2}/?$")
+
+
 def landed_on_home(requested: str, final: str) -> bool:
-    """A search request redirected to the bare site root (or a locale root like /ro/ro/): home-page
-    promotions, not search results."""
+    """A search request redirected to the bare site root (or to the locale root the request was made under, like
+    /ro/ro/ for /ro/ro/?query=x or /ro/ for /ro/search?q=x): home-page promotions, not search results.
+    A two-letter page that is not the request's locale root (Zalando /catalog/?q=hm -> /hm/) is a listing."""
     try:
         req, fin = urlsplit(requested), urlsplit(final)
     except ValueError:
         return False
-    if fin.query or re.sub(r"^(/[a-z]{2}){0,2}/?$", "", fin.path or "/"):
+    if fin.query:
         return False
-    return (req.path or "/").rstrip("/") != (fin.path or "/").rstrip("/") or bool(req.query)
+    fpath, rpath = fin.path or "/", req.path or "/"
+    if fpath.rstrip("/"):
+        if not _LOCALE_ROOT_RE.match(fpath) or not rpath.startswith(fpath.rstrip("/") + "/"):
+            return False
+    return rpath.rstrip("/") != fpath.rstrip("/") or bool(req.query)
 
 
 _PLACEHOLDER_IMG = re.compile(r"(placeholder|blank|spacer|lazy|loading|no[-_]?image|1x1|transparent)\.(gif|png|svg|jpe?g|webp)", re.I)
@@ -148,6 +156,7 @@ def image_of(card: Optional[Tag], base: str, selector: str = "img") -> Optional[
 # --------------------------------------------------------------------------- prices
 
 _PLAIN_NUM = re.compile(r"^\s*\d+(?:\.\d+)?\s*$")
+_THOUSANDS_ONLY = re.compile(r"^[1-9]\d{0,2}(?:\.\d{3})+$")
 UNIT_PRICE_RE = re.compile(
     r"(?:lei|ron)\*?\s*/\s*(?:\d+(?:[.,]\d+)?\s*)?(?:ml|cl|l|litr\w*|g|gr|gram\w*|kg|kilogram\w*|buc|bucat[aăi]|m|oz|"
     r"doz[aăe]|capsul[aăe]|tablet[aăe]|plic(?:uri)?|spal[aă]ri)\b",
@@ -176,6 +185,8 @@ def num(value: Any) -> Optional[float]:
     if isinstance(value, (int, float)):
         return float(value) if value > 0 else None
     s = str(value).strip()
+    if _THOUSANDS_ONLY.match(s):
+        return parse_price(s)  # "1.299" is 1299 lei (Romanian thousands dot), never 1.299 lei
     if _PLAIN_NUM.match(s):
         try:
             v = float(s)
@@ -213,25 +224,39 @@ _LOW30_RE = re.compile(r"30\s*(?:de\s*)?zile|cel\s+mai\s+mic|lowest|omnibus|ulti
 _ORIG_RE = re.compile(
     r"ini[tț]ial|original|recomandat|\bPRP\b|\bRRP\b|pre[tț]ul?\s+vechi|[iî]nainte|anterior|nereduce|standard", re.I)
 _FROM_RE = re.compile(r"(?:^|\s)(?:de\s+la|from|ab|incep[aâ]nd)(?:\s|$)", re.I)
+# a price label printed on its own line / element, before the amount it labels ("Preț inițial" | "549,99 lei");
+# stricter than _ORIG_RE so that a free-standing "Livrare standard" never labels the next amount
+# (anchored at the start, so a brand such as "adidas Originals" is never a label)
+_LABEL_ONLY_RE = re.compile(
+    r"30\s*(?:de\s*)?zile|cel\s+mai\s+mic\s+pre|lowest|omnibus|[iî]nainte\s+de\s+reducere|"
+    r"^(?:pre[tț](?:ul)?\s+)?(?:ini[tț]ial|original|recomandat|vechi|anterior)\b|^(?:PRP|RRP)\b", re.I)
+
+
+def _label_only(line: str) -> str:
+    """`line` when it is a short price label without an amount (its label applies to the next amount), else ""."""
+    return line if len(line) <= 80 and _LABEL_ONLY_RE.search(line) else ""
 
 
 def price_lines(lines: Iterable[Any]) -> dict[str, Any]:
     """Read a card's price block given as text lines (one per <p>/row).
 
     The first unlabelled amount is the current price; an amount labelled "Preț inițial" / "PRP" / "recomandat" is
-    the original (RRP), one labelled "cel mai mic preț din ultimele 30 de zile" is the EU Omnibus low. Unlabelled
-    extra amounts follow the Zalando convention: the higher one is the original, the lower one (when there are
-    two more) the 30-day low. Unit prices ("12,50 lei / 1 ml") are ignored."""
+    the original (RRP), one labelled "cel mai mic preț din ultimele 30 de zile" is the EU Omnibus low (a label on
+    its own line labels the first amount of the next line). Unlabelled extra amounts follow the Zalando convention:
+    the higher one is the original, the lower one (when there are two more) the 30-day low. Unit prices
+    ("12,50 lei / 1 ml") are ignored."""
     current: Optional[float] = None
     price_from = False
     orig: list[float] = []
     low: list[float] = []
     others: list[float] = []
+    pending = ""
     for raw in lines:
         line = norm(raw if isinstance(raw, str) else " ".join(str(x) for x in (raw or [])))
         if not line:
             continue
         pos = 0
+        matched = False
         for m in PRICE_WITH_CURRENCY_RE.finditer(line):
             ctx = line[pos:m.start()]
             tail = line[m.end():m.end() + 14]
@@ -241,6 +266,9 @@ def price_lines(lines: Iterable[Any]) -> dict[str, Any]:
             v = parse_price(m.group(0))
             if not v:
                 continue
+            if not matched and pending:
+                ctx = f"{pending} {ctx}"
+            matched = True
             if _LOW30_RE.search(ctx):
                 low.append(v)
             elif _ORIG_RE.search(ctx):
@@ -250,6 +278,7 @@ def price_lines(lines: Iterable[Any]) -> dict[str, Any]:
                 price_from = bool(_FROM_RE.search(ctx))
             else:
                 others.append(v)
+        pending = "" if matched else _label_only(line)
     original = max(orig) if orig else (max(others) if others else None)
     if low:
         lowest: Optional[float] = min(low)
@@ -264,12 +293,17 @@ def price_lines(lines: Iterable[Any]) -> dict[str, Any]:
 
 def labeled_prices(texts: Iterable[Any]) -> tuple[Optional[float], Optional[float]]:
     """(original, lowest_30_days) from texts that LABEL their amount ("PRP: 349,99 lei", "Cel mai mic preț din
-    ultimele 30 de zile: 299,99 lei"); unlabelled amounts are ignored."""
+    ultimele 30 de zile: 299,99 lei"); unlabelled amounts are ignored. A label-only text labels the first amount of
+    the text right after it (label and amount in sibling elements)."""
     orig: list[float] = []
     low: list[float] = []
+    pending = ""
     for raw in texts:
         line = norm(raw)
+        if not line:
+            continue
         pos = 0
+        matched = False
         for m in PRICE_WITH_CURRENCY_RE.finditer(line):
             ctx, pos = line[pos:m.start()], m.end()
             if re.match(r"\*?\s*/", line[m.end():m.end() + 6]):
@@ -277,10 +311,14 @@ def labeled_prices(texts: Iterable[Any]) -> tuple[Optional[float], Optional[floa
             v = parse_price(m.group(0))
             if not v:
                 continue
+            if not matched and pending:
+                ctx = f"{pending} {ctx}"
+            matched = True
             if _LOW30_RE.search(ctx):
                 low.append(v)
             elif _ORIG_RE.search(ctx):
                 orig.append(v)
+        pending = "" if matched else _label_only(line)
     return (max(orig) if orig else None), (min(low) if low else None)
 
 

@@ -50,6 +50,9 @@ class CommandProcessor:
         self.tg = engine.tg
         self.mode = mode  # "actions" (cron) | "daemon"
         self.force_check = False
+        from .tg_ui import TelegramUI
+
+        self.ui = TelegramUI(self)
 
     # ------------------------------------------------------------------ polling
     def poll(self, timeout: int = 0) -> Optional[int]:
@@ -60,7 +63,7 @@ class CommandProcessor:
         self._drop_stale_binding()
         offset = int(self.state.get("telegram", "offset", default=0) or 0)
         res = self.tg.api("getUpdates", _http_timeout=timeout + 15, offset=offset, timeout=timeout,
-                          allowed_updates=["message"])
+                          allowed_updates=["message", "callback_query"])
         if not res.get("ok"):
             desc = str(res.get("description", ""))
             if "webhook" in desc.lower():
@@ -69,6 +72,19 @@ class CommandProcessor:
         n = 0
         for upd in res.get("result", []):
             self.state.data["telegram"]["offset"] = int(upd["update_id"]) + 1
+            cq = upd.get("callback_query")
+            if cq:
+                cq_chat = str(((cq.get("message") or {}).get("chat") or {}).get("id", ""))
+                if self.authorized(cq_chat):
+                    try:
+                        self.ui.handle_callback(cq)
+                    except Exception:
+                        log.exception("button failed: %s", cq.get("data"))
+                        self.tg.api("answerCallbackQuery", callback_query_id=cq.get("id"), text="Ошибка, попробуйте ещё раз")
+                else:
+                    self.tg.api("answerCallbackQuery", callback_query_id=cq.get("id"), text="⛔ Бот приватный")
+                n += 1
+                continue
             msg = upd.get("message") or {}
             text = (msg.get("text") or "").strip()
             chat_id = str((msg.get("chat") or {}).get("id", ""))
@@ -105,22 +121,33 @@ class CommandProcessor:
 
     # ------------------------------------------------------------------ dispatch
     def handle(self, chat_id: str, text: str) -> Optional[str]:
+        # the very first message of any kind binds the chat when TELEGRAM_CHAT_ID is not set
+        if not self.tg.chat_ids and not self.state.get("telegram", "chat_id"):
+            self.state.data["telegram"]["chat_id"] = chat_id
+            self.ui.start(chat_id, "✅ Чат привязан — теперь бот отвечает только вам.")
+            return None
+        if not self.authorized(chat_id):
+            return "⛔ Этот бот приватный."
         if not text.startswith("/"):
-            if self.authorized(chat_id):
-                return "Чтобы добавить товар: <code>/add название до 1000</code>. Все команды: /help"
+            if self.ui.handle_text(chat_id, text):
+                return None
+            # plain text without a pending question: treat it as a new product to watch
+            self.ui._pending()[chat_id] = {"field": "new"}
+            self.ui.handle_text(chat_id, text)
             return None
         cmd, _, arg = text.partition(" ")
         cmd = cmd.split("@", 1)[0].lower()
         arg = arg.strip()
-        if cmd == "/start":
-            if not self.tg.chat_ids and not self.state.get("telegram", "chat_id"):
-                self.state.data["telegram"]["chat_id"] = chat_id
-                return (f"✅ Чат привязан (chat_id <code>{esc(chat_id)}</code>). Теперь бот отвечает только вам.\n\n" + HELP)
-            if self.authorized(chat_id):
-                return HELP
-            return "⛔ Этот бот приватный."
-        if not self.authorized(chat_id):
-            return "⛔ Этот бот приватный."
+        if cmd in ("/start", "/menu"):
+            self.ui.start(chat_id)
+            return None
+        if cmd == "/list" and not arg:
+            t, kb = self.ui.list_view()
+            self.ui.send(chat_id, t, kb)
+            return None
+        if cmd == "/add" and not arg:
+            self.ui._ask_new(chat_id)
+            return None
         handler = {
             "/help": lambda a: HELP, "/add": self.cmd_add, "/list": self.cmd_list, "/del": self.cmd_del,
             "/delete": self.cmd_del, "/rm": self.cmd_del, "/pause": self.cmd_pause, "/resume": self.cmd_resume,

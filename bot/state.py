@@ -268,7 +268,9 @@ class State:
     def best_offers(self, watch: Watch, limit: int = 10, max_age_h: float = 6) -> list[dict]:
         cutoff = now() - max_age_h * 3600
         prefix = watch.id + "|"
-        rows = [r for k, r in self.offers.items() if k.startswith(prefix) and r.get("m") and r.get("ls", 0) >= cutoff]
+        pools = [self.offers, self.data.get("home_offers") or {}]   # home_offers: read-only copy from the home runner
+        rows = [r for pool in pools for k, r in pool.items()
+                if k.startswith(prefix) and r.get("m") and r.get("ls", 0) >= cutoff]
         rows.sort(key=lambda r: r.get("p") or 1e12)
         return rows[:limit]
 

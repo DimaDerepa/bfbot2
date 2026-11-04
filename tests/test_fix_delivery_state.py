@@ -52,7 +52,7 @@ class FlakyTG(FakeTG):
         self.up = True
         self.attempts = 0
 
-    def send(self, text, chat_id=None, preview=False, silent=False):
+    def send(self, text, chat_id=None, preview=False, silent=False, markup=None):
         self.attempts += 1
         if not self.up:
             return False
@@ -495,7 +495,7 @@ def test_all_reply_and_alert_templates_are_valid_telegram_html(monkeypatch):
     tg.updates = [upd(20, "/top 1"), upd(21, "/stores"), upd(22, "/del 2"), upd(23, "/del 1")]
     cp.poll()
     kinds = " ".join(texts(tg))
-    for needle in ("Чат привязан", "Добавлено", "Отслеживаю", "Магазины", "Последняя проверка", "Обновлено",
+    for needle in ("Чат привязан", "Добавлено", "Ваши товары", "Магазины", "Последняя проверка", "Обновлено",
                    "Пауза", "Снова слежу", "Не знаю", "найдено", "не удаётся прочитать", "цена снизилась",
                    "не отвечают", "Снова работают", "самые дешёвые", "Удалено", "приватный"):
         assert needle in kinds, needle

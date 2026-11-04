@@ -76,13 +76,8 @@ class TelegramUI:
         self.tg = cp.tg
 
     # ------------------------------------------------------------------ low level
-    def send(self, chat_id: str, text: str, markup: Optional[dict] = None) -> Optional[int]:
-        params: dict[str, Any] = dict(chat_id=chat_id, text=text, parse_mode="HTML",
-                                      link_preview_options={"is_disabled": True})
-        if markup:
-            params["reply_markup"] = markup
-        res = self.tg.api("sendMessage", **params)
-        return (res.get("result") or {}).get("message_id") if res.get("ok") else None
+    def send(self, chat_id: str, text: str, markup: Optional[dict] = None) -> bool:
+        return self.tg.send(text, chat_id=chat_id, markup=markup)
 
     def edit(self, chat_id: str, message_id: Optional[int], text: str, markup: Optional[dict] = None) -> None:
         if not message_id:
@@ -133,9 +128,7 @@ class TelegramUI:
             w.id = f"{base}-{n}"
             n += 1
         st = self.state.data
-        st["initialized"] = [i for i in st.get("initialized", []) if i != w.id]
-        for k in [k for k in st.get("offers", {}) if k.startswith(w.id + "|")]:
-            del st["offers"][k]
+        self.state.forget_watch(w.id)
         d = w.to_dict()
         d.pop("origin", None)
         st["watches"].append(d)
