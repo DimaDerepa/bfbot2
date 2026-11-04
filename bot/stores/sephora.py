@@ -90,17 +90,18 @@ class SephoraStore(NextPager, Store):
             raise_if_challenge(html, soup, final)
             self.last_strategy = "redirect:home"
             return []
-        tiles = outermost(soup.select(".product-tile"))
-        self.last_strategy = "tcproduct" if any(t.get("data-tcproduct") for t in tiles) else "tiles"
-        out = dedupe(self._tile(t, final) for t in tiles)
-        if out:
-            return out
         if page == 1 and sephora_pid(final):
+            # the search redirected to one product: its recommendation tiles are other products
             o = self.parse_product(soup, final)
             if o is not None:
                 o.store_name = self.name
                 self.last_strategy = "product-page"
                 return [o]
+        tiles = outermost(soup.select(".product-tile"))
+        self.last_strategy = "tcproduct" if any(t.get("data-tcproduct") for t in tiles) else "tiles"
+        out = dedupe(self._tile(t, final) for t in tiles)
+        if out:
+            return out
         raise_if_challenge(html, soup, final)
         if page > 1:
             return []

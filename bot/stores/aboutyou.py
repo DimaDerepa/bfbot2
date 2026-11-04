@@ -104,17 +104,20 @@ class AboutYouStore(Store):
 
     def _entity(self, e: dict) -> Optional[Offer]:
         pid = e.get("id")
-        attrs = e.get("attributes") or {}
+        attrs = e.get("attributes") if isinstance(e.get("attributes"), dict) else {}
         brand, name = _label(attrs, "brand"), _label(attrs, "name")
         title = join_title(brand, name)
         if not pid or not title:
             return None
         best: Optional[tuple[bool, float, Optional[float]]] = None
         any_variant = False
-        for v in e.get("variants") or []:
+        variants = e.get("variants")
+        for v in variants if isinstance(variants, list) else []:
             if not isinstance(v, dict):
                 continue
-            pr = v.get("price") or {}
+            pr = v.get("price")
+            if not isinstance(pr, dict):
+                continue
             cur = str(pr.get("currencyCode") or "RON").upper()
             price = minor(pr.get("withTax"))
             if not price or cur not in ("RON", "LEI"):
@@ -126,7 +129,7 @@ class AboutYouStore(Store):
                 if isinstance(amt, int) and not isinstance(amt, bool) and amt > 0:
                     red += amt
             orig = minor(pr.get("originalWithTax")) or (minor(int(pr["withTax"]) + red) if red else None)
-            st = v.get("stock") or {}
+            st = v.get("stock") if isinstance(v.get("stock"), dict) else {}
             qty = st.get("quantity")
             sellable = (isinstance(qty, (int, float)) and qty > 0) or bool(st.get("isSellableWithoutStock"))
             cand = (sellable, price, orig)

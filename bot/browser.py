@@ -12,7 +12,9 @@ import logging
 import os
 import queue
 import threading
+import time
 from concurrent.futures import Future
+from concurrent.futures import TimeoutError as FutureTimeout
 from typing import Optional
 
 log = logging.getLogger("bot.browser")
@@ -35,31 +37,75 @@ def browser_enabled_for(store_key: str) -> bool:
     return store_key in {s.strip() for s in v.split(",")}
 
 
+LAUNCH_RETRY_AFTER = 600.0   # after Chromium failed to start, don't try again for this long (s)
+FETCH_TIMEOUT = 90.0         # longest a store thread waits for one browser fetch, queue time included (s)
+
+
 def available() -> bool:
+    """Playwright is installed and Chromium did not fail to start recently."""
     try:
         import playwright  # noqa: F401
     except Exception:
         return False
-    return True
+    return _Worker.launch_failed() is None
 
 
 class _Worker:
     _instance: Optional["_Worker"] = None
     _lock = threading.Lock()
+    _launch_error: Optional[str] = None      # why Chromium could not start (e.g. `playwright install` not run)
+    _launch_error_at = 0.0
 
     def __init__(self) -> None:
         self.q: "queue.Queue" = queue.Queue()
+        self.dead = False                         # set (under qlock) when the worker thread gave up
+        self.qlock = threading.Lock()
         self.thread = threading.Thread(target=self._run, name="browser", daemon=True)
         self.thread.start()
 
     @classmethod
+    def launch_failed(cls) -> Optional[str]:
+        """The recent Chromium start-up error, or None."""
+        if cls._launch_error and time.monotonic() - cls._launch_error_at < LAUNCH_RETRY_AFTER:
+            return cls._launch_error
+        return None
+
+    @classmethod
     def get(cls) -> "_Worker":
         with cls._lock:
+            err = cls.launch_failed()
+            if err:
+                raise RuntimeError(f"headless browser unavailable: {err}")
             if cls._instance is None or not cls._instance.thread.is_alive():
                 cls._instance = _Worker()
             return cls._instance
 
+    def _fail_pending(self, exc: BaseException) -> None:
+        """Fail every queued fetch at once (otherwise each caller would wait for its full timeout)."""
+        while True:
+            try:
+                item = self.q.get_nowait()
+            except queue.Empty:
+                return
+            if item is not None:
+                fut = item[3]
+                if fut.set_running_or_notify_cancel():
+                    fut.set_exception(exc)
+
     def _run(self) -> None:
+        try:
+            self._serve()
+        except BaseException as e:  # Chromium missing / crashed: never leave callers waiting on a dead thread
+            msg = f"{type(e).__name__}: {str(e).strip().splitlines()[0] if str(e).strip() else ''}"
+            log.error("headless browser failed: %s", msg)
+            with _Worker._lock:
+                _Worker._launch_error = msg
+                _Worker._launch_error_at = time.monotonic()
+            with self.qlock:
+                self.dead = True                  # fetch() refuses new items from now on ...
+            self._fail_pending(RuntimeError(f"headless browser unavailable: {msg}"))   # ... and queued ones fail
+
+    def _serve(self) -> None:
         from playwright.sync_api import sync_playwright
 
         from .net import Response, looks_blocked
@@ -75,6 +121,8 @@ class _Worker:
                 if item is None:
                     break
                 ctx_key, url, proxy, fut = item
+                if not fut.set_running_or_notify_cancel():
+                    continue      # the caller already gave up waiting: don't load the page for nobody
                 page = None
                 try:
                     ctx = contexts.get(ctx_key)
@@ -87,7 +135,7 @@ class _Worker:
                         ctx.add_init_script(_STEALTH_JS)
                         contexts[ctx_key] = ctx
                     page = ctx.new_page()
-                    resp = page.goto(url, wait_until="domcontentloaded", timeout=45000)
+                    resp = page.goto(url, wait_until="domcontentloaded", timeout=40000)
                     ctype = (resp.headers.get("content-type", "") if resp else "")
                     if resp is not None and "json" in ctype:
                         fut.set_result(Response(resp.url, resp.status, resp.text(), dict(resp.headers)))
@@ -108,7 +156,8 @@ class _Worker:
                         status = 200  # challenge passed after the initial 403
                     fut.set_result(Response(page.url, status, html, dict(resp.headers) if resp else {}))
                 except Exception as e:
-                    fut.set_exception(e)
+                    if not fut.done():
+                        fut.set_exception(e)
                 finally:
                     if page is not None:
                         try:
@@ -117,10 +166,17 @@ class _Worker:
                             pass
             browser.close()
 
-    def fetch(self, ctx_key: str, url: str, proxy: Optional[str], timeout: float = 120):
+    def fetch(self, ctx_key: str, url: str, proxy: Optional[str], timeout: float = FETCH_TIMEOUT):
         fut: Future = Future()
-        self.q.put((ctx_key, url, proxy, fut))
-        return fut.result(timeout=timeout)
+        with self.qlock:
+            if self.dead:
+                raise RuntimeError(f"headless browser unavailable: {_Worker._launch_error or 'worker stopped'}")
+            self.q.put((ctx_key, url, proxy, fut))
+        try:
+            return fut.result(timeout=timeout)
+        except FutureTimeout:
+            fut.cancel()                    # still queued -> the worker skips it
+            raise TimeoutError(f"browser fetch of {url} took longer than {timeout:.0f} s") from None
 
 
 def fetch(ctx_key: str, url: str, proxy: Optional[str] = None):

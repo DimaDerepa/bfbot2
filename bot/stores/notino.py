@@ -60,6 +60,16 @@ def apollo_state(html: str, soup: Optional[BeautifulSoup] = None) -> dict:
             return data if isinstance(data, dict) else {}
         except ValueError:
             pass
+        brace = raw.find("{")
+        data = json_at(raw, brace) if brace >= 0 else None      # "window.__APOLLO_STATE__ = {...};" / trailing junk
+        if isinstance(data, dict):
+            return data
+        try:  # hlidac-shopu reads it as JSON.parse(text.replace(/;/g, ""))
+            data = json.loads(raw.replace(";", ""))
+            if isinstance(data, dict):
+                return data
+        except ValueError:
+            pass
     i = (html or "").find("__APOLLO_STATE__")
     while i >= 0:
         j = html.find("=", i)
@@ -124,13 +134,20 @@ class NotinoStore(NextPager, Store):
             raise_if_challenge(html, soup, final)
             self.last_strategy = "redirect:home"
             return []
+        state = apollo_state(html, soup)
+        on_product = not urlsplit(final).path.lower().startswith("/search")
+        if on_product:
+            # the search went straight to a product page: its variants, not the "similar products" tiles
+            variants = self.apollo_offers(state, final)
+            if variants:
+                self.last_strategy = "apollo"
+                return variants
         cards = outermost(soup.select('[data-testid="product-container"]')) or outermost(soup.select("div[data-product]"))
         out = dedupe(self._card(c, final) for c in cards)
         if out:
             self.last_strategy = "cards"
             return out
-        state = apollo_state(html, soup)
-        variants = self.apollo_offers(state, final)
+        variants = [] if on_product else self.apollo_offers(state, final)
         if variants:
             self.last_strategy = "apollo"
             return variants

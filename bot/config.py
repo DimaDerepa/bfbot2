@@ -5,12 +5,16 @@ import os
 import re
 from dataclasses import dataclass, field, fields
 from typing import Any, Optional
+from urllib.parse import urlsplit
 
 import yaml
 
 from .models import Watch
+from .text import has_cyrillic
 
 _WATCH_FIELDS = {f.name for f in fields(Watch)}
+
+LATIN_HINT = "Пишите название латиницей, как на сайте магазина (например: aspirator dyson, iphone 16 pro)"
 
 
 @dataclass
@@ -55,7 +59,45 @@ def _as_list(v: Any) -> list[str]:
     return [str(x).strip() for x in v if str(x).strip()]
 
 
-def watch_from_dict(d: dict, origin: str = "config") -> Watch:
+def check_latin(d: dict) -> None:
+    """Raise ValueError when the words matched against shop titles (query, must_include, any_of, exclude) contain
+    Cyrillic: titles are Romanian/English, norm() drops Cyrillic, so such a word never matches anything and an
+    all-Russian query used to match every search result."""
+    bad: list[str] = []
+    q = d.get("query")
+    if isinstance(q, str):
+        bad += [w for w in q.split() if has_cyrillic(w)]
+    for k in ("must_include", "any_of", "exclude"):
+        v = d.get(k) or []
+        for term in ([v] if isinstance(v, str) else v):
+            if has_cyrillic(str(term)):
+                bad.append(str(term))
+    if bad:
+        raise ValueError(f"{LATIN_HINT}. На кириллице: {', '.join(dict.fromkeys(bad))}")
+
+
+def check_urls(urls: list[str]) -> None:
+    """Raise ValueError for a link that is not a full http(s) address with a host (a stray '[' from copy-paste
+    used to make every later run crash in urlsplit)."""
+    for u in urls:
+        try:
+            p = urlsplit(u)
+            ok = p.scheme.lower() in ("http", "https") and bool(p.hostname)
+            p.port  # noqa: B018 - raises ValueError for a bad port ("https://shop.ro:abc/")
+        except ValueError:
+            ok = False
+        if not ok:
+            shown = u if len(u) <= 80 else u[:77] + "..."
+            raise ValueError(f"Некорректная ссылка: {shown} — нужна полная ссылка на страницу товара, "
+                             "например https://www.emag.ro/...")
+
+
+def watch_from_dict(d: dict, origin: str = "config", *, validate: bool = True) -> Watch:
+    """Build a Watch from config.yaml / Telegram data.
+    `validate` (default) also rejects Cyrillic words and malformed links. Pass validate=False when re-loading a watch
+    that was already accepted and stored earlier, so state written by older versions keeps loading."""
+    if not isinstance(d, dict):
+        raise ValueError(f"пункт watch должен быть словарём (name: ..., query: ...), а не {d!r}")
     d = dict(d)
     aliases = {"include": "must_include", "must": "must_include", "not": "exclude", "max": "max_price",
                "min": "min_price", "discount": "min_discount", "url": "urls", "skip": "skip_stores"}
@@ -69,13 +111,28 @@ def watch_from_dict(d: dict, origin: str = "config") -> Watch:
         if k in d and d[k] is not None:
             d[k] = _as_list(d[k]) or None
     for k in ("min_price", "max_price", "min_discount", "drop_pct"):
-        if d.get(k) is not None:
-            d[k] = float(d[k])
-    if "name" not in d:
+        v = d.get(k)
+        if v is None:
+            continue
+        n = _num(v.rstrip().rstrip("%")) if isinstance(v, str) else float(v)   # "4 800", "5к", "4800 lei"
+        if n is None:
+            raise ValueError(f"«{k}»: нужно число, например 4800 (было: {v})")
+        d[k] = n
+    if d.get("query") is not None:
+        d["query"] = str(d["query"])
+    if d.get("id") is not None:
+        d["id"] = str(d["id"])
+    if not d.get("name"):
         d["name"] = d.get("query") or (d.get("urls") or ["watch"])[0]
+    d["name"] = str(d["name"])
     unknown = set(d) - _WATCH_FIELDS
     if unknown:
         raise ValueError(f"watch '{d.get('name')}': неизвестные поля {sorted(unknown)}")
+    if validate:
+        if isinstance(d.get("query"), str) and not d["query"].strip():
+            d["query"] = None          # an empty query used to match every offer
+        check_latin(d)
+        check_urls(d.get("urls") or [])
     d["origin"] = origin
     return Watch(**d)
 
@@ -86,11 +143,28 @@ def load_config(path: str) -> Config:
     with open(path, encoding="utf-8") as f:
         raw = yaml.safe_load(f) or {}
     settings = Settings.from_dict(raw.get("settings") or {})
-    watches = [watch_from_dict(w) for w in (raw.get("watches") or [])]
-    ids = [w.id for w in watches]
-    dup = {i for i in ids if ids.count(i) > 1}
+    watches: list[Watch] = []
+    explicit: list[bool] = []          # the watch has its own `id:` in config.yaml
+    for n, wd in enumerate(raw.get("watches") or [], 1):
+        try:
+            watches.append(watch_from_dict(wd))
+        except ValueError as e:
+            raise ValueError(f"config.yaml, пункт {n} в watches: {e}") from e
+        explicit.append(isinstance(wd, dict) and wd.get("id") not in (None, ""))
+    ids = [w.id for w, ex in zip(watches, explicit) if ex]
+    dup = sorted({i for i in ids if ids.count(i) > 1})
     if dup:
-        raise ValueError(f"повторяющиеся имена watch: {sorted(dup)}")
+        raise ValueError(f"config.yaml: повторяющиеся id у watch: {dup}")
+    # ids made from names may coincide ("iPhone 16" / "iphone-16"): number them like /add does, in file order
+    taken = set(ids)
+    for w, ex in zip(watches, explicit):
+        if ex:
+            continue
+        base, k = w.id, 2
+        while w.id in taken:
+            w.id = f"{base}-{k}"
+            k += 1
+        taken.add(w.id)
     return Config(settings, watches)
 
 

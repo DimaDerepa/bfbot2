@@ -65,16 +65,18 @@ class ElefantStore(NextPager, Store):
             self.last_strategy = "redirect:home"
             return []
         cards = outermost(soup.select(".product-tile, .product-item"))
+        if page == 1 and elefant_id(final) and not urlsplit(final).path.startswith("/search"):
+            # the search redirected to one product: its "related products" tiles are other products
+            # (a heuristic h1 + first price read is trusted only when the page has no product tiles at all)
+            o = self.parse_product(soup, final, html)
+            if o is not None and (o.source != "elefant-pdp" or not cards):
+                self.last_strategy = "product-page"
+                return [o]
         out = dedupe(self._card(c, final) for c in cards)
         if out:
             self.last_strategy = "cards"
             self._pager_set(page + 1, next_page_url(soup, final))
             return out
-        if page == 1 and elefant_id(final):
-            o = self.parse_product(soup, final, html)
-            if o is not None:
-                self.last_strategy = "product-page"
-                return [o]
         raise_if_challenge(html, soup, final)
         if page > 1:
             return []

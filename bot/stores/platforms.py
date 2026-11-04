@@ -229,7 +229,8 @@ def _as_bool(v: Any, default: bool = True) -> bool:
     if v is None:
         return default
     if isinstance(v, str):
-        return v.strip().lower() not in ("0", "false", "no", "off", "нет", "")
+        v = v.strip().lower()
+        return default if not v else v not in ("0", "false", "no", "off", "нет")
     return bool(v)
 
 
@@ -249,7 +250,11 @@ def make_custom_store(spec: dict) -> type[Store]:
     if base_cls is None:
         raise ValueError(f"shop {spec.get('key')}: неизвестная платформа {platform!r}; варианты: {sorted(PLATFORMS)}")
     base_url = _with_scheme(str(spec.get("base_url") or "")).rstrip("/")
-    search_url = _with_scheme(str(spec.get("search_url") or ""))
+    search_url = str(spec.get("search_url") or "").strip()
+    if search_url.startswith("/") and base_url:
+        search_url = base_url + search_url           # "/cautare?q={q}" relative to base_url
+    else:
+        search_url = _with_scheme(search_url)
     if not base_url and search_url:
         from urllib.parse import urlsplit
 
