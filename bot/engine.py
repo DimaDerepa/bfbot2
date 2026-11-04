@@ -17,6 +17,7 @@ from .matcher import evaluate
 from .models import Offer, Watch
 from .net import BlockedError, FetchError, Http, proxy_for
 from .notify import Telegram, esc, format_alerts, in_quiet_hours
+from .specs import model_key
 from .state import Alert, State
 from .stores import Store, registry, store_for_url, web_store_for
 
@@ -386,10 +387,14 @@ class Engine:
                 if res.ok:
                     matched_offers.append((o, res.discount))
                 a = self.state.observe(w, o, res.ok, max(0.0, drop_pct), res.discount)
+                rec = self.state.offers.get(self.state.rec_key(w, o))
+                if rec is not None:
+                    rec["mk"] = (v or {}).get("model") or model_key(o.title)
                 if a:
                     alerts.append(a)
             summary["matches"] += len(matched_offers)
 
+            alerts = self._one_per_model(w, alerts, drop_pct)
             if first:
                 if not any_store_ok:
                     continue  # nothing fetched yet; keep the watch un-initialised
@@ -406,6 +411,7 @@ class Engine:
                     self.state.mark_initialized(w)
                     for a in new_alerts:
                         self.state.mark_notified(a)  # do not re-announce everything one by one later
+                    self._commit_models(w, new_alerts)
                     summary["alerts"] += min(len(new_alerts), top_n)
                     sent_ids = {id(a) for a in new_alerts}
                     rest = [a for a in alerts if id(a) not in sent_ids]
@@ -426,6 +432,7 @@ class Engine:
                 if self._send(msg):
                     for a in alerts:
                         self.state.mark_notified(a)
+                    self._commit_models(w, alerts)
                     summary["alerts"] += len(send)
                 else:
                     for a in alerts:
@@ -453,6 +460,50 @@ class Engine:
         return summary
 
     # ------------------------------------------------------------------ health messages
+    def _one_per_model(self, w: Watch, alerts: list, drop_pct: float) -> list:
+        """Same model from several shops / colours -> only its cheapest offer is announced, and only when that is
+        a new model or a new low for the model. The other shops are listed under it."""
+        if not alerts or not bool(getattr(self.settings, "dedupe_models", True)):
+            return alerts
+        cutoff = time.time() - 6 * 3600
+        prefix = w.id + "|"
+        groups: dict[str, list] = {}
+        for k, r in self.state.offers.items():
+            if k.startswith(prefix) and r.get("m") and r.get("ls", 0) >= cutoff and r.get("mk"):
+                groups.setdefault(r["mk"], []).append(r)
+        model_np = self.state.data.setdefault("model_np", {}).setdefault(w.id, {})
+        keep = []
+        for a in alerts:
+            rec = self.state.offers.get(self.state.rec_key(w, a.offer)) or {}
+            mk = rec.get("mk") or model_key(a.offer.title)
+            same = sorted(groups.get(mk, []), key=lambda r: r.get("p") or 1e12)
+            if same and (same[0].get("p") or 1e12) < a.offer.price - 0.01:
+                self.state.mark_notified(a)          # another shop sells this model cheaper right now
+                continue
+            prev = model_np.get(mk)
+            if a.kind == "new" and prev is not None and a.offer.price > prev * (1 - max(0.0, drop_pct) / 100.0):
+                self.state.mark_notified(a)          # already announced this model at this price or lower
+                continue
+            a.model_key = mk
+            a.others = [(r.get("p"), r.get("s")) for r in same if r.get("u") != a.offer.url][:3]
+            keep.append(a)
+        # one alert per model even if two shops have the same lowest price
+        out, seen = [], set()
+        for a in sorted(keep, key=lambda a: a.offer.price):
+            if a.model_key in seen:
+                self.state.mark_notified(a)
+                continue
+            seen.add(a.model_key)
+            out.append(a)
+        return out
+
+    def _commit_models(self, w: Watch, sent: list) -> None:
+        model_np = self.state.data.setdefault("model_np", {}).setdefault(w.id, {})
+        for a in sent:
+            mk = getattr(a, "model_key", None)
+            if mk:
+                model_np[mk] = min(a.offer.price, model_np.get(mk, 1e12))
+
     def _gate(self, w: Watch, alerts: list, keep: int) -> list:
         """Claude's last look at what is about to be sent. Rejected offers are recorded as not matching and
         silently marked notified, so they never reach the user (or the Mini App's best-price list)."""

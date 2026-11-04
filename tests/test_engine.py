@@ -204,3 +204,27 @@ def test_state_roundtrip(tmp_path):
     st.data["telegram"]["offset"] = 77
     st.save()
     assert State.load(str(p)).get("telegram", "offset") == 77
+
+
+def test_one_offer_per_model_at_the_best_price():
+    FakeStore.blocked = False
+    FakeStore.offers = [
+        mk("Telefon mobil Samsung Galaxy S25, 12GB RAM, 256GB, 5G, Navy", 3499, pid="emag-s25"),
+        mk("Telefon SAMSUNG Galaxy S25 5G, 256GB, 12GB RAM, Dual SIM, Icy Blue", 3299, pid="altex-s25"),
+        mk("Telefon mobil Samsung Galaxy S25 Ultra, 12GB RAM, 256GB", 4999, pid="ultra"),
+    ]
+    w = watch_from_dict({"name": "s25", "query": "samsung galaxy s25", "max_price": 6000})
+    tg = FakeTG()
+    e = engine_with([w], tg=tg, first_run_digest=10)
+    e.run_cycle()
+    msg = tg.messages[-1][1]
+    assert "найдено 2" in msg                        # S25 once (cheapest shop) + S25 Ultra
+    assert "3 299" in msg and "Icy Blue" in msg and "ещё: FakeShop 3 499" in msg
+    assert msg.count("Galaxy S25,") == 0              # the pricier S25 listing is not a separate line
+    tg.messages.clear()
+    FakeStore.offers[0].price = 3399                 # dearer shop drops but is still above the best -> silence
+    e.run_cycle()
+    assert tg.messages == []
+    FakeStore.offers[0].price = 3099                 # now it is the new lowest price for the model -> alert
+    e.run_cycle()
+    assert len(tg.messages) == 1 and "3 099" in tg.messages[0][1]

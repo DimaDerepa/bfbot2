@@ -233,6 +233,9 @@ def format_offer_line(a: Alert, store_names: dict[str, str]) -> str:
         notes.append("наличие неизвестно")
     if "resigilat" in o.title.lower():
         notes.append("resigilat (вскрытая упаковка)")
+    others = getattr(a, "others", None)
+    if others:
+        lines.append("<i>ещё: " + esc(" · ".join(f"{store_names.get(s, s)} {fmt_price(p)}" for p, s in others if p)) + "</i>")
     if notes:
         lines.append("<i>" + esc(" · ".join(notes)) + "</i>")
     return "\n".join(lines)

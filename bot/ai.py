@@ -161,8 +161,10 @@ CLASSIFY_SCHEMA = {
     "properties": {"items": {"type": "array", "items": {
         "type": "object",
         "properties": {"i": {"type": "integer"}, "match": {"type": "boolean"}, "year": _I, "ram_gb": _I,
+                       "model": {"type": "string", "description": "canonical model id, lowercase, without colour, "
+                                 "seller, part number or marketing words; same product in another colour/shop -> same string"},
                        "why": {"type": "string"}},
-        "required": ["i", "match", "year", "ram_gb", "why"], "additionalProperties": False}}},
+        "required": ["i", "match", "year", "ram_gb", "model", "why"], "additionalProperties": False}}},
     "required": ["items"], "additionalProperties": False,
 }
 CLASSIFY_SYSTEM = (
@@ -210,7 +212,7 @@ def verdicts(state, w, titles: list[str]) -> dict[str, dict]:
     for t in dict.fromkeys(titles):
         v = cache.get(_key(t))
         if v is not None:
-            out[t] = {"match": v[0], "year": v[1], "ram_gb": v[2]}
+            out[t] = {"match": v[0], "year": v[1], "ram_gb": v[2], "model": v[4] if len(v) > 4 else None}
         else:
             todo.append(t)
     if todo and enabled():
@@ -228,8 +230,9 @@ def verdicts(state, w, titles: list[str]) -> dict[str, dict]:
                 idx = it.get("i")
                 if isinstance(idx, int) and 0 <= idx < len(chunk):
                     t = chunk[idx]
-                    cache[_key(t)] = [bool(it.get("match")), it.get("year"), it.get("ram_gb"), int(time.time())]
-                    out[t] = {"match": bool(it.get("match")), "year": it.get("year"), "ram_gb": it.get("ram_gb")}
+                    model = (it.get("model") or "").strip().lower()[:80] or None
+                    cache[_key(t)] = [bool(it.get("match")), it.get("year"), it.get("ram_gb"), int(time.time()), model]
+                    out[t] = {"match": bool(it.get("match")), "year": it.get("year"), "ram_gb": it.get("ram_gb"), "model": model}
     return out
 
 

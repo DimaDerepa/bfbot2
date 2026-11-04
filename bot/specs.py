@@ -163,3 +163,43 @@ def spec_reasons(watch, title: str) -> list[str]:
         elif y < year_min:
             reasons.append(f"модель {y} года")
     return reasons
+
+
+# ------------------------------------------------------------------ model identity (dedupe across shops/colours)
+_COLOURS = set("""
+black negru neagra negre white alb alba albe blue albastru albastra navy silver argintiu argintie gold auriu aurie
+gray grey gri green verde red rosu rosie pink roz purple mov violet yellow galben orange portocaliu bronze copper
+beige cream crem lavender mint coral graphite midnight starlight titanium natural desert cosmic deep space jet onyx
+cobalt icy icyblue phantom obsidian porcelain hazel peony iris frost moonstone aloe lemongrass ultramarine teal
+mystic sky sand ocean aurora arctic charcoal ink amber jade lime plum rose sage slate stone storm sunset tidal
+""".split())
+_GENERIC = set("""
+telefon mobil smartphone smart televizor tv led laptop notebook ultrabook tableta monitor 5g 4g lte dual sim esim nano
+ram rom memorie stocare interna cm inch inchi hz clasa model nou noua new cu si de din pentru la in the and with
+full hd uhd fhd qhd hdr hdr10 wifi wi-fi bluetooth nfc android ios google tizen webos vidaa sistem operare garantie
+oferta pret versiune international eu ro edition editie global resigilat placa video procesor sm
+""".split())
+_STORAGE = re.compile(r"^\d+(gb|tb)$")
+
+
+def model_key(title: str) -> str:
+    """Same product from different shops / in different colours -> same key (best effort without Claude)."""
+    t = norm(title or "")
+    t = re.sub(r"\b(ultra|full)\s+hd\b|\bhd\s+ready\b|\b4k\b|\b8k\b", " ", t)
+    t = re.sub(r"\b\d{2,3}\s*cm\b|\b\d{2,3}\s*hz\b|\bclasa\s+[a-g]\b|\b\d{2,4}\s*-?\s*bit\b", " ", t)
+    toks = []
+    for tok in re.findall(r"[0-9a-z]+(?:[.+][0-9a-z]+)*", t):
+        if tok in _COLOURS or tok in _GENERIC:
+            continue
+        toks.append(tok)
+    # TV / monitor model codes ("55c46la", "oled55c46la", "ue55du7172") identify the product on their own
+    codes = sorted({re.sub(r"^(oled|qled|qned|ue|qe|kd|xr|tx|tq|tu|un)(?=\d)", "", x) for x in toks
+                    if re.fullmatch(r"(oled|qled|qned|ue|qe|kd|xr|tx|tq|tu|un)?\d{2}[a-z]+\d*[a-z0-9]*", x) and len(x) >= 5})
+    if codes:
+        return "code:" + codes[0]
+    # shop part numbers ("mymj3zd", "sms931bzbdeue") differ between shops: drop them
+    toks = [x for x in toks if (len(x) > 1 or x.isdigit()) and not (len(x) >= 6 and re.search(r"[a-z]", x) and re.search(r"\d", x)
+                                                    and not _STORAGE.match(x))]
+    storage = sorted({x for x in toks if _STORAGE.match(x)}, key=lambda x: (x.endswith("tb"), int(re.match(r"\d+", x).group())))
+    rest = [x for x in toks if not _STORAGE.match(x)]
+    return " ".join(sorted(set(rest)) + storage)[:120]

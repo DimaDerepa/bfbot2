@@ -169,7 +169,7 @@ class TelegramUI:
                  "st": w.stores, "stk": w.in_stock, "en": w.enabled, "ai": w.ai, "it": (w.intent or "")[:160],
                  "best": [top[0]["p"], top[0]["s"]] if top else None}
             if full:
-                d["top"] = [[r.get("p"), r.get("op"), r.get("s"), (r.get("t") or "")[:110], r.get("u")] for r in top]
+                d["top"] = [[r.get("p"), r.get("op"), r.get("s"), (r.get("t") or "")[:110], r.get("u"), r.get("n", 1)] for r in top]
             ws.append(d)
         reg = registry(getattr(self.engine.settings, "shops", ()))
         home = set(getattr(self.engine.settings, "home_stores", []) or [])
@@ -190,7 +190,7 @@ class TelegramUI:
                 "health": hs, "last_run": self.state.get("last_run"), "runs": self.state.get("runs"),
                 "home_on": home_on, "ai_on": bool(os.environ.get("ANTHROPIC_API_KEY")),
                 "cfg": {"quiet": getattr(st, "quiet_hours", None), "drop": getattr(st, "notify_drop_pct", 2),
-                        "digest": getattr(st, "first_run_digest", 8)},
+                        "digest": getattr(st, "first_run_digest", 8), "dedupe": bool(getattr(st, "dedupe_models", True))},
             })
         return snap
 
@@ -219,6 +219,8 @@ class TelegramUI:
                         ov["notify_drop_pct"] = max(0.5, float(c["drop"]))
                     if "digest" in c and c["digest"]:
                         ov["first_run_digest"] = max(1, min(30, int(c["digest"])))
+                    if "dedupe" in c and c["dedupe"] is not None:
+                        ov["dedupe_models"] = bool(c["dedupe"])
                     for k, v in ov.items():
                         if hasattr(self.engine.settings, k):
                             setattr(self.engine.settings, k, v)

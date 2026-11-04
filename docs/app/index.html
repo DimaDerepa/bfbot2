@@ -162,7 +162,7 @@ function offersOf(w) {
   const [p, op] = top[0];
   const disc = op && op > p ? Math.round((op - p) / op * 100) : 0;
   return `<div class="best"><span class="price">${fmt(p)} лей</span>${op && op > p ? `<span class="old">${fmt(op)}</span><span class="disc">−${disc}%</span>` : ""}</div>
-    <div class="offers">${top.map((o, j) => `<div class="offer" data-u="${esc(o[4])}"><div class="t">${esc(o[3])}</div><div class="p">${fmt(o[0])} лей<span class="s">${esc(storeName(o[2]))}</span></div></div>`).join("")}</div>`;
+    <div class="offers">${top.map((o, j) => `<div class="offer" data-u="${esc(o[4])}"><div class="t">${esc(o[3])}</div><div class="p">${fmt(o[0])} лей<span class="s">${esc(storeName(o[2]))}${o[5] > 1 ? ` · +${o[5] - 1} магаз.` : ""}</span></div></div>`).join("")}</div>`;
 }
 function changed(i) { return JSON.stringify(state[i]) !== JSON.stringify(orig[i]); }
 function renderList() {
@@ -256,6 +256,7 @@ function renderSettings() {
       <div class="g2" ${quietOn ? "" : 'style="opacity:.45"'}><div><label class="f">С (час)</label><input type="number" id="qA" value="${qa}"></div><div><label class="f">До (час)</label><input type="number" id="qB" value="${qb}"></div></div>
       <label class="f">Сообщать о новом снижении цены от, %</label><input type="number" inputmode="decimal" id="drop" value="${c.drop ?? 2}">
       <label class="f">Сколько предложений в первой подборке</label><input type="number" inputmode="numeric" id="digest" value="${c.digest ?? 8}">
+      <div class="switch"><span>Одна модель — одно предложение<br><span class="muted">по лучшей цене, остальные магазины списком</span></span><label class="tg"><input type="checkbox" id="dedupe" ${c.dedupe !== false ? "checked" : ""}><span></span></label></div>
     </div>
     <div class="card"><div class="title">Состояние</div>
       <div class="shop"><span class="dot ${DATA.last_run ? "ok" : "new"}"></span><div class="grow">Последняя проверка<div class="muted">${ago(DATA.last_run)}${DATA.runs ? ` · всего ${DATA.runs}` : ""}</div></div></div>
@@ -265,12 +266,12 @@ function renderSettings() {
   const upd = () => {
     const on = $("#qOn").checked;
     cfgEdit.quiet = on ? `${parseInt($("#qA").value || 23)}-${parseInt($("#qB").value || 8)}` : "";
-    cfgEdit.drop = num($("#drop").value); cfgEdit.digest = num($("#digest").value);
+    cfgEdit.drop = num($("#drop").value); cfgEdit.digest = num($("#digest").value); cfgEdit.dedupe = $("#dedupe").checked;
     const base = DATA.cfg || {};
-    Object.keys(cfgEdit).forEach(k => { if (String(cfgEdit[k] ?? "") === String(base[k] ?? "")) delete cfgEdit[k]; });
+    Object.keys(cfgEdit).forEach(k => { const b = k === "dedupe" ? base[k] !== false : base[k]; if (String(cfgEdit[k] ?? "") === String(b ?? "")) delete cfgEdit[k]; });
     refresh();
   };
-  ["#qOn", "#qA", "#qB", "#drop", "#digest"].forEach(id => $(id).addEventListener(id === "#qOn" ? "change" : "input", () => { upd(); if (id === "#qOn") renderSettings(); }));
+  ["#qOn", "#qA", "#qB", "#drop", "#digest", "#dedupe"].forEach(id => $(id).addEventListener(id === "#qOn" || id === "#dedupe" ? "change" : "input", () => { upd(); if (id === "#qOn") renderSettings(); }));
 }
 
 // ---------------------------------------------------------------- save

@@ -215,6 +215,11 @@ class State:
         if isinstance(uf, dict):
             for k in [k for k in uf if k.split("|", 1)[0] not in active_watch_ids]:
                 del uf[k]
+        for bucket in ("model_np", "ai_cache", "ai_gate"):
+            b = self.data.get(bucket)
+            if isinstance(b, dict):
+                for k in [k for k in b if k not in active_watch_ids]:
+                    del b[k]
         return len(drop)
 
     # ------------------------------------------------------------------ per-watch bookkeeping
@@ -239,6 +244,8 @@ class State:
         for k in urls:
             del self.data["url_fail"][k]
         self.data["initialized"] = [i for i in self.data["initialized"] if i != watch_id]
+        for bucket in ("model_np", "ai_cache", "ai_gate"):   # per-model / Claude memory of the old watch
+            (self.data.get(bucket) or {}).pop(watch_id, None)
         if log_event:
             self._log_watch_event("forget", watch_id)
 
@@ -314,13 +321,28 @@ class State:
             h["last_fail"] = now()
         return h
 
-    def best_offers(self, watch: Watch, limit: int = 10, max_age_h: float = 6) -> list[dict]:
+    def best_offers(self, watch: Watch, limit: int = 10, max_age_h: float = 6, dedupe: bool = True) -> list[dict]:
+        """Cheapest current matches. With dedupe, one row per model (its cheapest shop) and "n" = shops with it."""
         cutoff = now() - max_age_h * 3600
         prefix = watch.id + "|"
         pools = [self.offers, self.data.get("home_offers") or {}]   # home_offers: read-only copy from the home runner
         rows = [r for pool in pools for k, r in pool.items()
                 if k.startswith(prefix) and r.get("m") and r.get("ls", 0) >= cutoff]
         rows.sort(key=lambda r: r.get("p") or 1e12)
+        if dedupe:
+            from .specs import model_key
+
+            seen: dict[str, dict] = {}
+            out = []
+            for r in rows:
+                mk = r.get("mk") or model_key(r.get("t") or "")
+                if mk in seen:
+                    seen[mk]["n"] = seen[mk].get("n", 1) + 1
+                    continue
+                r = dict(r, n=1)
+                seen[mk] = r
+                out.append(r)
+            rows = out
         return rows[:limit]
 
     # ------------------------------------------------------------------ store health

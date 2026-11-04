@@ -36,6 +36,7 @@ class Settings:
     # shops that block GitHub's cloud: checked by the home runner (watch-home.yml) when HOME_RUNNER=true
     home_stores: list[str] = field(default_factory=lambda: [
         "emag", "pcgarage", "evomag", "cel", "forit", "vexio", "leroymerlin", "compari", "pricero"])
+    dedupe_models: bool = True             # one model = one offer (the cheapest shop), others listed under it
     quiet_hours: Optional[str] = "23-8"    # Bucharest time: alerts still arrive, but without sound; null = always loud
     shops: list[dict] = field(default_factory=list)   # custom shops (platform adapters)
 
