@@ -158,28 +158,51 @@ class TelegramUI:
         import base64
         import json
 
-        raw = json.dumps(self.webapp_snapshot(), ensure_ascii=False, separators=(",", ":"))
+        raw = json.dumps(self.webapp_snapshot(full=False), ensure_ascii=False, separators=(",", ":"))
         return base64.urlsafe_b64encode(raw.encode()).decode().rstrip("=")
 
-    def webapp_snapshot(self) -> dict:
-        """Everything the Mini App shows. Also stored in state.json ("app"), which the app reads live from the
-        public state branch, so it is fresh even if the keyboard button is old."""
+    def webapp_snapshot(self, full: bool = True) -> dict:
+        """Everything the Mini App shows. The full version (top offers, shop health, settings) is stored in
+        state.json ("app") and read live by the app from the public state branch; the short version rides in
+        the keyboard button URL as a fallback."""
+        import os
         import time as _t
 
         from .stores import registry
 
         ws = []
         for w in self.engine.all_watches():
-            best = self.state.best_offers(w, 1)
-            ws.append({"h": _h(w.id), "n": w.name[:60], "q": w.query or "", "xq": w.extra_queries,
-                       "mn": w.min_price, "mx": w.max_price, "dc": w.min_discount, "r": w.ram_min, "y": w.year_min,
-                       "ex": w.exclude, "inc": [x for x in w.must_include if not x.startswith("re:")], "any": w.any_of,
-                       "st": w.stores, "stk": w.in_stock, "en": w.enabled, "ai": w.ai,
-                       "best": [best[0]["p"], best[0]["s"]] if best else None})
+            top = self.state.best_offers(w, 6 if full else 1)
+            d = {"h": _h(w.id), "n": w.name[:60], "q": w.query or "", "xq": w.extra_queries,
+                 "mn": w.min_price, "mx": w.max_price, "dc": w.min_discount, "r": w.ram_min, "y": w.year_min,
+                 "ex": w.exclude, "inc": [x for x in w.must_include if not x.startswith("re:")], "any": w.any_of,
+                 "st": w.stores, "stk": w.in_stock, "en": w.enabled, "ai": w.ai, "it": (w.intent or "")[:160],
+                 "best": [top[0]["p"], top[0]["s"]] if top else None}
+            if full:
+                d["top"] = [[r.get("p"), r.get("op"), r.get("s"), (r.get("t") or "")[:110], r.get("u")] for r in top]
+            ws.append(d)
         reg = registry(getattr(self.engine.settings, "shops", ()))
+        home = set(getattr(self.engine.settings, "home_stores", []) or [])
+        home_on = os.environ.get("BOT_HOME_ENABLED", "").lower() in ("1", "true", "yes")
         stores = [[k, c.name, 1 if c.aggregator else 0]
                   for k, c in sorted(reg.items(), key=lambda kv: (not kv[1].aggregator, kv[1].name.lower()))]
-        return {"v": 1, "t": int(_t.time()), "r": repo_slug(), "w": ws, "s": stores}
+        snap: dict[str, Any] = {"v": 2, "t": int(_t.time()), "r": repo_slug(), "w": ws, "s": stores}
+        if full:
+            health = self.state.data.get("stores", {})
+            hs = []
+            for k, name, _agg in stores:
+                h = health.get(k) or {}
+                where = "home" if (k in home and home_on) else "cloud"
+                status = "new" if not h else ("ok" if not h.get("cf") else "fail")
+                hs.append([k, status, h.get("last_count"), (h.get("last_error") or "")[:90], where, h.get("last_ok")])
+            st = self.engine.settings
+            snap.update({
+                "health": hs, "last_run": self.state.get("last_run"), "runs": self.state.get("runs"),
+                "home_on": home_on, "ai_on": bool(os.environ.get("ANTHROPIC_API_KEY")),
+                "cfg": {"quiet": getattr(st, "quiet_hours", None), "drop": getattr(st, "notify_drop_pct", 2),
+                        "digest": getattr(st, "first_run_digest", 8)},
+            })
+        return snap
 
     def handle_webapp(self, chat_id: str, raw: str) -> None:
         """Changes sent by the Mini App (Telegram.WebApp.sendData)."""
@@ -196,6 +219,21 @@ class TelegramUI:
         for op in (data.get("ops") or [])[:40]:
             try:
                 kind = op.get("op")
+                if kind == "cfg":
+                    ov = self.state.data.setdefault("settings_overrides", {})
+                    c = op.get("f") or {}
+                    if "quiet" in c:
+                        q = str(c["quiet"] or "").strip()
+                        ov["quiet_hours"] = q or None
+                    if "drop" in c and c["drop"] is not None:
+                        ov["notify_drop_pct"] = max(0.5, float(c["drop"]))
+                    if "digest" in c and c["digest"]:
+                        ov["first_run_digest"] = max(1, min(30, int(c["digest"])))
+                    for k, v in ov.items():
+                        if hasattr(self.engine.settings, k):
+                            setattr(self.engine.settings, k, v)
+                    done.append("⚙️ Настройки сохранены")
+                    continue
                 if kind == "add" and str(op.get("text") or "").strip():
                     w = self._create(str(op["text"]))
                     done.append(f"➕ {esc(w.name)} — {esc(w.describe())}")

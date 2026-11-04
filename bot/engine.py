@@ -101,6 +101,9 @@ class Engine:
     def __init__(self, cfg: Config, state: State, tg: Telegram, *, dry_run: bool = False) -> None:
         self.cfg = cfg
         self.settings = cfg.settings
+        for k, v in (state.data.get("settings_overrides") or {}).items():   # set from the Mini App
+            if hasattr(self.settings, k):
+                setattr(self.settings, k, v)
         self.state = state
         self.tg = tg
         self.dry_run = dry_run

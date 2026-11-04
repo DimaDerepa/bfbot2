@@ -12,6 +12,7 @@ concurrency:
 
 permissions:
   contents: write
+  actions: write      # lets a run start the next one, so the bot stays online
 
 jobs:
   check:
@@ -54,7 +55,7 @@ jobs:
           BOT_PROXY_STORES: ${{ vars.BOT_PROXY_STORES }}
           BOT_BROWSER: ${{ vars.BOT_BROWSER }}
           BOT_HOME_ENABLED: ${{ vars.HOME_RUNNER }}
-          BOT_LISTEN_MINUTES: "8"
+          BOT_LISTEN_MINUTES: "9"
           BOT_APP_URL: ${{ vars.BOT_APP_URL }}
         run: python -m bot run --state state.json
 
@@ -63,3 +64,11 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: bash scripts/save_state.sh state.json
+
+      # Keep the bot online: every run starts the next one (GitHub's own schedule is often hours late).
+      # Set the repository variable BOT_CONTINUOUS=false to stop the chain (the cron above still runs).
+      - name: Start the next run
+        if: always() && vars.BOT_CONTINUOUS != 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh workflow run watch.yml --repo "$GITHUB_REPOSITORY" --ref "${GITHUB_REF_NAME:-main}" || true

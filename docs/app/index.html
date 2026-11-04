@@ -6,262 +6,348 @@
 <title>Охотник за скидками</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <style>
-  :root {
-    --bg: var(--tg-theme-bg-color, #ffffff);
-    --bg2: var(--tg-theme-secondary-bg-color, #f2f3f5);
-    --text: var(--tg-theme-text-color, #111111);
-    --hint: var(--tg-theme-hint-color, #8a8f98);
-    --link: var(--tg-theme-link-color, #2481cc);
-    --btn: var(--tg-theme-button-color, #2481cc);
-    --btn-text: var(--tg-theme-button-text-color, #ffffff);
-    --danger: #e5484d;
-    --ok: #30a46c;
-    --radius: 14px;
-  }
-  * { box-sizing: border-box; }
-  html, body { margin: 0; padding: 0; background: var(--bg2); color: var(--text);
-    font: 15px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
-  main { padding: 12px 12px 90px; max-width: 640px; margin: 0 auto; }
-  h1 { font-size: 20px; margin: 4px 4px 2px; }
-  .sub { color: var(--hint); font-size: 13px; margin: 0 4px 12px; }
-  .card { background: var(--bg); border-radius: var(--radius); padding: 12px 14px; margin-bottom: 10px; }
-  .row { display: flex; align-items: center; gap: 10px; }
-  .grow { flex: 1; min-width: 0; }
-  .name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
-  .chip { background: var(--bg2); border-radius: 999px; padding: 2px 9px; font-size: 12.5px; color: var(--text); }
-  .chip.best { background: color-mix(in srgb, var(--ok) 15%, var(--bg)); color: var(--ok); font-weight: 600; }
-  .paused { opacity: .55; }
-  button { font: inherit; border: 0; border-radius: 10px; padding: 9px 12px; cursor: pointer; }
-  .btn { background: var(--btn); color: var(--btn-text); }
-  .btn2 { background: var(--bg2); color: var(--text); }
-  .btn-danger { background: transparent; color: var(--danger); padding-left: 0; }
-  .icon { background: var(--bg2); color: var(--text); padding: 7px 10px; }
-  label { display: block; font-size: 12.5px; color: var(--hint); margin: 10px 0 4px; }
-  input[type=text], input[type=number], textarea, select {
-    width: 100%; font: inherit; color: var(--text); background: var(--bg2); border: 1px solid transparent;
-    border-radius: 10px; padding: 9px 10px; outline: none; }
-  input:focus, textarea:focus, select:focus { border-color: var(--btn); }
-  textarea { min-height: 84px; resize: vertical; }
-  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-  .three { display: grid; grid-template-columns: 1fr 1fr 92px; gap: 8px; }
-  .stores { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 4px; }
-  .store { display: flex; align-items: center; gap: 6px; background: var(--bg2); border-radius: 9px; padding: 7px 9px; font-size: 13.5px; }
-  .store input { margin: 0; }
-  .switch { display: flex; align-items: center; justify-content: space-between; margin-top: 12px; }
-  .hint { color: var(--hint); font-size: 12.5px; margin-top: 6px; }
-  .examples span { display: inline-block; background: var(--bg2); border-radius: 8px; padding: 4px 8px; margin: 4px 4px 0 0; font-size: 12.5px; cursor: pointer; }
-  .changed { box-shadow: 0 0 0 2px var(--btn) inset; }
-  .empty { text-align: center; color: var(--hint); padding: 28px 10px; }
-  details summary { cursor: pointer; color: var(--link); font-size: 13.5px; margin-top: 10px; }
-  #fallbackSave { position: fixed; left: 12px; right: 12px; bottom: 12px; display: none; }
+:root{
+  --bg:var(--tg-theme-bg-color,#fff);--bg2:var(--tg-theme-secondary-bg-color,#f1f2f6);
+  --text:var(--tg-theme-text-color,#14161a);--hint:var(--tg-theme-hint-color,#8b919c);
+  --link:var(--tg-theme-link-color,#2a7fd4);--accent:var(--tg-theme-button-color,#2a7fd4);
+  --accent-text:var(--tg-theme-button-text-color,#fff);--danger:#e5484d;--ok:#2f9e6e;--warn:#e38b1d;
+  --r:16px;--shadow:0 1px 2px rgba(0,0,0,.05),0 4px 14px rgba(0,0,0,.04);
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;background:var(--bg2);color:var(--text);font:15px/1.42 -apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,sans-serif}
+main{max-width:640px;margin:0 auto;padding:14px 12px 96px}
+header{display:flex;align-items:center;gap:10px;margin:2px 4px 14px}
+header h1{font-size:21px;margin:0;flex:1;letter-spacing:-.2px}
+.pill{font-size:12px;padding:4px 10px;border-radius:999px;background:var(--bg);color:var(--hint);box-shadow:var(--shadow);white-space:nowrap}
+.pill.on{color:var(--ok)}
+.tab{display:none}.tab.active{display:block}
+.card{background:var(--bg);border-radius:var(--r);padding:14px;margin-bottom:12px;box-shadow:var(--shadow)}
+.card.changed{box-shadow:0 0 0 2px var(--accent)}
+.card.paused{opacity:.6}
+.title{font-weight:650;font-size:16px;line-height:1.3}
+.muted{color:var(--hint);font-size:13px}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.chip{background:var(--bg2);border-radius:999px;padding:3px 10px;font-size:12.5px}
+.chip.ai{background:color-mix(in srgb,var(--accent) 14%,var(--bg));color:var(--accent)}
+.best{display:flex;align-items:baseline;gap:8px;margin-top:10px}
+.best .price{font-size:22px;font-weight:700;letter-spacing:-.3px}
+.best .old{color:var(--hint);text-decoration:line-through;font-size:13px}
+.best .disc{color:var(--ok);font-weight:650;font-size:13px}
+.offers{margin-top:10px;border-top:1px solid var(--bg2)}
+.offer{display:flex;gap:10px;align-items:center;padding:9px 0;border-bottom:1px solid var(--bg2);cursor:pointer}
+.offer:last-child{border-bottom:0}
+.offer .t{flex:1;min-width:0;font-size:13.5px;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+.offer .p{text-align:right;white-space:nowrap;font-weight:650}
+.offer .s{display:block;font-weight:400;color:var(--hint);font-size:12px}
+.actions{display:flex;gap:8px;margin-top:12px}
+button{font:inherit;border:0;border-radius:12px;padding:10px 14px;cursor:pointer;background:var(--bg2);color:var(--text)}
+button.primary{background:var(--accent);color:var(--accent-text);font-weight:600}
+button.ghost{background:transparent;color:var(--link);padding:10px 6px}
+button.danger{background:transparent;color:var(--danger);padding:10px 6px}
+.grow{flex:1}
+label.f{display:block;font-size:12.5px;color:var(--hint);margin:12px 0 5px}
+input[type=text],input[type=number],textarea,select{width:100%;font:inherit;color:var(--text);background:var(--bg2);border:1.5px solid transparent;border-radius:12px;padding:10px 12px;outline:none;-webkit-appearance:none}
+input:focus,textarea:focus,select:focus{border-color:var(--accent)}
+textarea{min-height:96px;resize:vertical}
+.g2{display:grid;grid-template-columns:1fr 1fr;gap:8px}.g3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}
+.ex span{display:inline-block;background:var(--bg2);border-radius:10px;padding:6px 10px;margin:6px 6px 0 0;font-size:13px;cursor:pointer}
+.switch{display:flex;align-items:center;justify-content:space-between;padding:10px 0}
+.tg{position:relative;width:46px;height:28px;flex:none}
+.tg input{opacity:0;width:0;height:0}
+.tg span{position:absolute;inset:0;background:var(--bg2);border-radius:999px;transition:.2s;box-shadow:inset 0 0 0 1px rgba(0,0,0,.06)}
+.tg span:before{content:"";position:absolute;width:22px;height:22px;left:3px;top:3px;background:#fff;border-radius:50%;transition:.2s;box-shadow:0 1px 3px rgba(0,0,0,.25)}
+.tg input:checked+span{background:var(--ok)}.tg input:checked+span:before{transform:translateX(18px)}
+.stores{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+.st{display:flex;align-items:center;gap:7px;background:var(--bg2);border-radius:10px;padding:8px 10px;font-size:13.5px}
+.st input{margin:0;accent-color:var(--accent)}
+.shop{display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--bg2)}
+.shop:last-child{border-bottom:0}
+.dot{width:10px;height:10px;border-radius:50%;flex:none;background:var(--hint)}
+.dot.ok{background:var(--ok)}.dot.fail{background:var(--danger)}.dot.new{background:#c7cbd3}
+.badge{font-size:11.5px;padding:2px 8px;border-radius:999px;background:var(--bg2);color:var(--hint)}
+.empty{text-align:center;padding:34px 16px;color:var(--hint)}
+.empty b{display:block;color:var(--text);font-size:17px;margin-bottom:6px}
+nav{position:fixed;left:0;right:0;bottom:0;background:var(--bg);display:flex;justify-content:space-around;padding:6px 6px calc(6px + env(safe-area-inset-bottom));box-shadow:0 -1px 0 rgba(0,0,0,.06)}
+nav button{background:transparent;flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;font-size:11.5px;color:var(--hint);padding:6px 2px;border-radius:10px}
+nav button .i{font-size:20px;line-height:1}
+nav button.active{color:var(--accent);font-weight:600}
+.banner{background:color-mix(in srgb,var(--warn) 14%,var(--bg));color:var(--text);border-radius:12px;padding:10px 12px;font-size:13.5px;margin-bottom:12px;display:none}
+details summary{cursor:pointer;color:var(--link);font-size:14px;margin-top:12px;list-style:none}
+details summary::-webkit-details-marker{display:none}
+#save{position:fixed;left:12px;right:12px;bottom:72px;display:none;box-shadow:var(--shadow)}
 </style>
 </head>
 <body>
 <main>
-  <h1>🎯 Охотник за скидками</h1>
-  <div class="sub" id="sub">Настройте, что искать — бот проверяет магазины Румынии каждые 10 минут.</div>
+  <header><h1>🎯 Охотник за скидками</h1><span class="pill" id="status">…</span></header>
+  <div class="banner" id="banner"></div>
 
-  <div class="card">
-    <div class="row"><div class="grow"><b>➕ Новый товар</b></div></div>
-    <label for="newText">Опишите обычными словами</label>
-    <textarea id="newText" placeholder="телефон 12 гб оперативки 2025 и новее не моторола до 1000$ скидка больше 20%"></textarea>
-    <div class="examples" id="examples"></div>
-  </div>
+  <section class="tab active" id="tab-list"><div id="list"></div></section>
 
-  <div id="list"></div>
-  <div class="hint" id="stamp"></div>
+  <section class="tab" id="tab-add">
+    <div class="card">
+      <div class="title">Что ищем?</div>
+      <div class="muted">Опишите обычными словами — бот сам поймёт категорию, бренды, цену, скидку, память и год.</div>
+      <label class="f" for="newText">Описание</label>
+      <textarea id="newText" placeholder="телефон 12 гб оперативки 2025 и новее не моторола до 1000$ скидка больше 20%"></textarea>
+      <div class="ex" id="examples"></div>
+      <details><summary>Уточнить цену и скидку ›</summary>
+        <div class="g3">
+          <div><label class="f">Цена до</label><input type="number" inputmode="decimal" id="newMax"></div>
+          <div><label class="f">Валюта</label><select id="newCur"><option>RON</option><option>USD</option><option>EUR</option></select></div>
+          <div><label class="f">Скидка от, %</label><input type="number" inputmode="numeric" id="newDisc"></div>
+        </div>
+      </details>
+      <div class="muted" style="margin-top:12px">Или пришлите ссылку на конкретный товар в любом магазине.</div>
+    </div>
+  </section>
+
+  <section class="tab" id="tab-shops"><div class="card" id="shops"></div></section>
+
+  <section class="tab" id="tab-settings"><div id="settings"></div></section>
 </main>
-<button class="btn" id="fallbackSave">Сохранить</button>
-
+<button class="primary" id="save">Сохранить</button>
+<nav>
+  <button class="active" data-tab="list"><span class="i">🎯</span>Товары</button>
+  <button data-tab="add"><span class="i">➕</span>Добавить</button>
+  <button data-tab="shops"><span class="i">🏪</span>Магазины</button>
+  <button data-tab="settings"><span class="i">⚙️</span>Настройки</button>
+</nav>
 <script>
 const tg = window.Telegram && window.Telegram.WebApp;
-if (tg) { tg.ready(); tg.expand(); }
+const inTelegram = !!(tg && tg.platform && tg.platform !== "unknown");
+if (tg) { tg.ready(); tg.expand(); try { tg.setHeaderColor("secondary_bg_color"); } catch (e) {} }
 
-function decode(s) {
-  try {
-    s = s.replace(/-/g, "+").replace(/_/g, "/");
-    while (s.length % 4) s += "=";
-    const bin = atob(s);
-    const bytes = Uint8Array.from(bin, c => c.charCodeAt(0));
-    return JSON.parse(new TextDecoder().decode(bytes));
-  } catch (e) { return null; }
-}
-const params = new URLSearchParams(location.search);
-const DATA = decode(params.get("d") || "") || { w: [], s: [], t: 0 };
-const STORES = (DATA.s || []).slice();
-const orig = JSON.parse(JSON.stringify(DATA.w || []));
-const state = JSON.parse(JSON.stringify(DATA.w || []));
-const deleted = new Set();
-
-const EXAMPLES = [
-  "телефон 12 гб оперативки 2025 и новее не моторола до 1000$ скидка больше 20%",
-  "ноутбук 16 гб озу 1 тб до 5000 лей asus или lenovo",
-  "телевизор oled 55 дюймов до 4500",
-  "пылесос дайсон скидка 30%",
-  "видеокарта rtx 5070 до 3000",
-  "кроссовки nike air max до 400",
-];
-const ex = document.getElementById("examples");
-EXAMPLES.forEach(t => { const s = document.createElement("span"); s.textContent = t; s.onclick = () => { newText.value = t; refreshButton(); }; ex.appendChild(s); });
-
+const $ = s => document.querySelector(s);
+const esc = s => String(s == null ? "" : s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const fmt = v => v == null ? "" : Math.round(v).toLocaleString("ru-RU");
 const csv = a => (a || []).join(", ");
 const parseCsv = s => s.split(/[,;\n]/).map(x => x.trim()).filter(Boolean);
-const storeName = k => (STORES.find(s => s[0] === k) || [k, k])[1];
-const esc = s => String(s == null ? "" : s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const num = v => { if (v === "" || v == null) return null; const n = Number(String(v).replace(",", ".")); return isFinite(n) && n > 0 ? n : null; };
+const clone = o => JSON.parse(JSON.stringify(o));
+function decode(s) {
+  try { s = s.replace(/-/g, "+").replace(/_/g, "/"); while (s.length % 4) s += "=";
+    return JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(s), c => c.charCodeAt(0)))); } catch (e) { return null; }
+}
 
-function chips(w) {
+let DATA = decode(new URLSearchParams(location.search).get("d") || "") || { w: [], s: [], t: 0 };
+let orig = clone(DATA.w || []), state = clone(DATA.w || []);
+const deleted = new Set();
+let cfgEdit = {};
+const open = new Set();
+
+const EXAMPLES = ["телефон 12 гб оперативки 2025 и новее не моторола до 1000$ скидка больше 20%",
+  "ноутбук 16 гб озу 1 тб до 5000 лей asus или lenovo", "телевизор oled 55 дюймов до 4500",
+  "видеокарта rtx 5070 до 3000", "пылесос дайсон скидка 30%", "кроссовки nike air max до 400", "духи dior sauvage скидка 25%"];
+EXAMPLES.forEach(t => { const s = document.createElement("span"); s.textContent = t; s.onclick = () => { $("#newText").value = t; refresh(); }; $("#examples").appendChild(s); });
+
+const storeName = k => ((DATA.s || []).find(s => s[0] === k) || [k, k])[1];
+function ago(ts) { if (!ts) return "ещё не было"; const m = Math.round((Date.now() / 1000 - ts) / 60); return m < 1 ? "только что" : m < 60 ? `${m} мин назад` : `${Math.round(m / 60)} ч назад`; }
+function openLink(u) { if (tg && tg.openLink) tg.openLink(u); else window.open(u, "_blank"); }
+
+// ---------------------------------------------------------------- products
+function chipsOf(w) {
   const c = [];
   if (w.mn != null && w.mx != null) c.push(`${fmt(w.mn)}–${fmt(w.mx)} лей`);
-  else if (w.mx != null) c.push(`до ${fmt(w.mx)} лей`);
-  else if (w.mn != null) c.push(`от ${fmt(w.mn)} лей`);
-  if (w.dc) c.push(`скидка ≥${w.dc}%`);
-  if (w.r) c.push(`ОЗУ ≥${w.r} ГБ`);
-  if (w.y) c.push(`${w.y}+`);
-  if ((w.ex || []).length) c.push("без: " + csv(w.ex));
-  if (w.st && w.st.length) c.push(w.st.length + " магаз.");
-  if (w.ai) c.push("🤖 Claude");
-  return c.map(x => `<span class="chip">${esc(x)}</span>`).join("") +
-    (w.best ? `<span class="chip best">⭐ ${fmt(w.best[0])} лей · ${esc(storeName(w.best[1]))}</span>` : "");
+  else if (w.mx != null) c.push(`до ${fmt(w.mx)} лей`); else if (w.mn != null) c.push(`от ${fmt(w.mn)} лей`);
+  if (w.dc) c.push(`скидка ≥${w.dc}%`); if (w.r) c.push(`ОЗУ ≥${w.r} ГБ`); if (w.y) c.push(`${w.y}+`);
+  if ((w.ex || []).length) c.push("без " + csv(w.ex));
+  c.push(w.st && w.st.length ? `${w.st.length} магаз.` : "все магазины");
+  return c.map(x => `<span class="chip">${esc(x)}</span>`).join("") + (w.ai ? `<span class="chip ai">🤖 Claude</span>` : "");
 }
-
-function changed(i) {
-  return JSON.stringify(state[i]) !== JSON.stringify(orig[i]);
+function offersOf(w) {
+  const top = w.top || [];
+  if (!top.length) return w.best ? `<div class="best"><span class="price">${fmt(w.best[0])} лей</span><span class="muted">${esc(storeName(w.best[1]))}</span></div>`
+    : `<div class="muted" style="margin-top:10px">Пока подходящих предложений нет — бот напишет, как только появятся.</div>`;
+  const [p, op] = top[0];
+  const disc = op && op > p ? Math.round((op - p) / op * 100) : 0;
+  return `<div class="best"><span class="price">${fmt(p)} лей</span>${op && op > p ? `<span class="old">${fmt(op)}</span><span class="disc">−${disc}%</span>` : ""}</div>
+    <div class="offers">${top.map((o, j) => `<div class="offer" data-u="${esc(o[4])}"><div class="t">${esc(o[3])}</div><div class="p">${fmt(o[0])} лей<span class="s">${esc(storeName(o[2]))}</span></div></div>`).join("")}</div>`;
 }
-
-function render() {
-  const list = document.getElementById("list");
-  if (!state.length) { list.innerHTML = `<div class="card empty">Пока ничего не отслеживается.<br>Опишите товар выше и нажмите «Сохранить».</div>`; return; }
+function changed(i) { return JSON.stringify(state[i]) !== JSON.stringify(orig[i]); }
+function renderList() {
+  const list = $("#list");
+  const visible = state.filter(w => !deleted.has(w.h));
+  if (!visible.length) {
+    list.innerHTML = `<div class="card empty"><b>Пока ничего не отслеживается</b>Добавьте первый товар — вкладка «➕ Добавить».</div>`;
+    return;
+  }
   list.innerHTML = "";
   state.forEach((w, i) => {
     if (deleted.has(w.h)) return;
     const el = document.createElement("div");
     el.className = "card" + (w.en ? "" : " paused") + (changed(i) ? " changed" : "");
-    el.innerHTML = `
-      <div class="row">
-        <div class="grow"><div class="name">${w.en ? "" : "⏸ "}${esc(w.n)}</div><div class="chips">${chips(w)}</div></div>
-        <button class="icon" data-act="toggle">${w.open ? "▲" : "✏️"}</button>
-      </div>
-      ${w.open ? form(w, i) : ""}`;
-    el.querySelector('[data-act="toggle"]').onclick = () => { w.open = !w.open; render(); };
-    if (w.open) bind(el, w, i);
+    el.innerHTML = `<div class="title">${w.en ? "" : "⏸ "}${esc(w.n)}</div>
+      <div class="chips">${chipsOf(w)}</div>${offersOf(w)}
+      <div class="actions"><button class="grow" data-a="edit">${open.has(w.h) ? "Свернуть" : "✏️ Условия"}</button>
+      <button data-a="pause">${w.en ? "⏸" : "▶️"}</button></div>
+      ${open.has(w.h) ? editor(w) : ""}`;
+    el.querySelectorAll(".offer").forEach(o => o.onclick = () => openLink(o.dataset.u));
+    el.querySelector('[data-a="edit"]').onclick = () => { open.has(w.h) ? open.delete(w.h) : open.add(w.h); renderList(); };
+    el.querySelector('[data-a="pause"]').onclick = () => { w.en = !w.en; renderList(); refresh(); };
+    if (open.has(w.h)) bindEditor(el, w, i);
     list.appendChild(el);
   });
-  document.getElementById("stamp").textContent = DATA.t ? "Данные на " + new Date(DATA.t * 1000).toLocaleString("ru-RU") : "";
 }
-
-function form(w, i) {
+function editor(w) {
   const st = new Set(w.st || []);
-  const stores = STORES.map(([k, n, agg]) => `<label class="store"><input type="checkbox" data-store="${esc(k)}" ${st.has(k) ? "checked" : ""}>${esc(n)}${agg ? " 🔎" : ""}</label>`).join("");
-  return `
-    <label>Что искать (как в поиске магазина)</label>
-    <input type="text" data-f="q" value="${esc(w.q)}">
-    <label>Дополнительные запросы (через запятую)</label>
-    <input type="text" data-f="xq" value="${esc(csv(w.xq))}">
-    <div class="three">
-      <div><label>Цена от</label><input type="number" inputmode="decimal" data-f="mn" value="${w.mn ?? ""}"></div>
-      <div><label>Цена до</label><input type="number" inputmode="decimal" data-f="mx" value="${w.mx ?? ""}"></div>
-      <div><label>Валюта</label><select data-f="cur"><option>RON</option><option>USD</option><option>EUR</option></select></div>
-    </div>
-    <div class="three">
-      <div><label>Скидка от, %</label><input type="number" inputmode="numeric" data-f="dc" value="${w.dc ?? ""}"></div>
-      <div><label>ОЗУ от, ГБ</label><input type="number" inputmode="numeric" data-f="r" value="${w.r ?? ""}"></div>
-      <div><label>Год от</label><input type="number" inputmode="numeric" data-f="y" value="${w.y ?? ""}"></div>
-    </div>
-    <label>Исключить слова / бренды</label>
-    <input type="text" data-f="ex" value="${esc(csv(w.ex))}" placeholder="motorola, resigilat, husa">
-    <label>Обязательные слова</label>
-    <input type="text" data-f="inc" value="${esc(csv(w.inc))}" placeholder="256gb">
-    <label>Хотя бы одно из</label>
-    <input type="text" data-f="any" value="${esc(csv(w.any))}" placeholder="samsung, xiaomi, google">
-    <details ${w.st && w.st.length ? "open" : ""}><summary>Магазины: ${w.st && w.st.length ? w.st.length + " выбрано" : "все подходящие (авто)"}</summary>
-      <div class="stores">${stores}</div>
-      <div class="hint">Ничего не отмечено — бот сам выберет магазины по типу товара. 🔎 — агрегатор цен.</div>
-    </details>
-    <div class="switch"><span>Только в наличии</span><input type="checkbox" data-f="stk" ${w.stk ? "checked" : ""}></div>
-    <div class="switch"><span>Отслеживать</span><input type="checkbox" data-f="en" ${w.en ? "checked" : ""}></div>
-    <div class="row" style="margin-top:12px"><button class="btn-danger" data-act="del">🗑 Удалить</button></div>`;
+  return `<label class="f">Что искать (как в поиске магазина)</label><input type="text" data-f="q" value="${esc(w.q)}">
+    <label class="f">Дополнительные запросы</label><input type="text" data-f="xq" value="${esc(csv(w.xq))}" placeholder="через запятую">
+    <div class="g3"><div><label class="f">Цена от</label><input type="number" inputmode="decimal" data-f="mn" value="${w.mn ?? ""}"></div>
+      <div><label class="f">Цена до</label><input type="number" inputmode="decimal" data-f="mx" value="${w.mx ?? ""}"></div>
+      <div><label class="f">Валюта</label><select data-f="cur"><option>RON</option><option>USD</option><option>EUR</option></select></div></div>
+    <div class="g3"><div><label class="f">Скидка от, %</label><input type="number" inputmode="numeric" data-f="dc" value="${w.dc ?? ""}"></div>
+      <div><label class="f">ОЗУ от, ГБ</label><input type="number" inputmode="numeric" data-f="r" value="${w.r ?? ""}"></div>
+      <div><label class="f">Год от</label><input type="number" inputmode="numeric" data-f="y" value="${w.y ?? ""}"></div></div>
+    <label class="f">Исключить слова / бренды</label><input type="text" data-f="ex" value="${esc(csv(w.ex))}" placeholder="motorola, resigilat">
+    <label class="f">Обязательные слова</label><input type="text" data-f="inc" value="${esc(csv(w.inc))}" placeholder="256gb">
+    <label class="f">Хотя бы одно из (бренды)</label><input type="text" data-f="any" value="${esc(csv(w.any))}" placeholder="samsung, xiaomi">
+    <details ${st.size ? "open" : ""}><summary>🏪 Магазины: ${st.size ? st.size + " выбрано" : "все подходящие"} ›</summary>
+      <div class="stores" style="margin-top:8px">${(DATA.s || []).map(([k, n, a]) => `<label class="st"><input type="checkbox" data-store="${esc(k)}" ${st.has(k) ? "checked" : ""}>${esc(n)}${a ? " 🔎" : ""}</label>`).join("")}</div>
+      <div class="muted" style="margin-top:6px">Ничего не отмечено — бот выберет магазины сам по типу товара.</div></details>
+    <div class="switch"><span>Только в наличии</span><label class="tg"><input type="checkbox" data-f="stk" ${w.stk ? "checked" : ""}><span></span></label></div>
+    <div class="actions"><button class="danger" data-a="del">🗑 Удалить товар</button></div>`;
 }
-
-function num(v) { if (v === "" || v == null) return null; const n = Number(String(v).replace(",", ".")); return isFinite(n) && n > 0 ? n : null; }
-
-function bind(el, w, i) {
+function bindEditor(el, w, i) {
   el.querySelectorAll("[data-f]").forEach(inp => {
     const f = inp.dataset.f;
-    if (f === "cur") { inp.value = w.cur || "RON"; }
+    if (f === "cur") inp.value = w.cur || "RON";
     const upd = () => {
-      if (f === "stk" || f === "en") w[f] = inp.checked;
+      if (f === "stk") w.stk = inp.checked;
       else if (["mn", "mx", "dc", "r", "y"].includes(f)) w[f] = num(inp.value);
       else if (["xq", "ex", "inc", "any"].includes(f)) w[f] = parseCsv(inp.value);
       else if (f === "cur") w.cur = inp.value === "RON" ? undefined : inp.value;
       else w[f] = inp.value.trim();
-      el.classList.toggle("changed", changed(i));
-      refreshButton();
+      el.classList.toggle("changed", changed(i)); refresh();
     };
     inp.addEventListener(inp.type === "checkbox" || inp.tagName === "SELECT" ? "change" : "input", upd);
   });
   el.querySelectorAll("[data-store]").forEach(cb => cb.addEventListener("change", () => {
-    const set = new Set(w.st || []);
-    cb.checked ? set.add(cb.dataset.store) : set.delete(cb.dataset.store);
-    w.st = set.size ? [...set] : null;
-    el.classList.toggle("changed", changed(i));
-    refreshButton();
+    const s = new Set(w.st || []); cb.checked ? s.add(cb.dataset.store) : s.delete(cb.dataset.store);
+    w.st = s.size ? [...s] : null; el.classList.toggle("changed", changed(i)); refresh();
   }));
-  el.querySelector('[data-act="del"]').onclick = () => {
-    const really = () => { deleted.add(w.h); render(); refreshButton(); };
-    if (tg && tg.showConfirm) tg.showConfirm(`Удалить «${w.n}»?`, ok => ok && really()); else if (confirm(`Удалить «${w.n}»?`)) really();
+  el.querySelector('[data-a="del"]').onclick = () => {
+    const go = () => { deleted.add(w.h); renderList(); refresh(); };
+    tg && tg.showConfirm ? tg.showConfirm(`Удалить «${w.n}»?`, ok => ok && go()) : confirm(`Удалить «${w.n}»?`) && go();
   };
 }
 
+// ---------------------------------------------------------------- shops
+function renderShops() {
+  const hs = DATA.health || [];
+  const order = { ok: 0, fail: 1, new: 2 };
+  const rows = (hs.length ? hs.slice() : (DATA.s || []).map(s => [s[0], "new", null, "", "cloud", null]))
+    .sort((a, b) => (order[a[1]] ?? 3) - (order[b[1]] ?? 3)).map(([k, status, cnt, err, where]) => {
+    const label = status === "ok" ? `работает${cnt != null ? ` · ${cnt} товаров` : ""}` : status === "fail" ? (err || "не отвечает") : "ещё не проверялся";
+    return `<div class="shop"><span class="dot ${status}"></span><div class="grow"><div>${esc(storeName(k))}</div><div class="muted">${esc(label)}</div></div>
+      <span class="badge">${where === "home" ? "🏠 дом" : "☁️ облако"}</span></div>`;
+  }).join("");
+  $("#shops").innerHTML = `<div class="title">Магазины</div><div class="muted" style="margin-bottom:6px">${DATA.home_on ? "Домашний компьютер подключён: eMAG, PC Garage и др. проверяет он." : "eMAG, PC Garage, evoMAG, CEL блокируют облако — подключите домашний компьютер (инструкция в README)."}</div>${rows}`;
+}
+
+// ---------------------------------------------------------------- settings
+function renderSettings() {
+  const c = Object.assign({}, DATA.cfg || {}, cfgEdit);
+  const quietOn = !!c.quiet;
+  const [qa, qb] = (c.quiet || "23-8").split("-");
+  $("#settings").innerHTML = `
+    <div class="card"><div class="title">Уведомления</div>
+      <div class="switch"><span>Тихие часы (без звука)</span><label class="tg"><input type="checkbox" id="qOn" ${quietOn ? "checked" : ""}><span></span></label></div>
+      <div class="g2" ${quietOn ? "" : 'style="opacity:.45"'}><div><label class="f">С (час)</label><input type="number" id="qA" value="${qa}"></div><div><label class="f">До (час)</label><input type="number" id="qB" value="${qb}"></div></div>
+      <label class="f">Сообщать о новом снижении цены от, %</label><input type="number" inputmode="decimal" id="drop" value="${c.drop ?? 2}">
+      <label class="f">Сколько предложений в первой подборке</label><input type="number" inputmode="numeric" id="digest" value="${c.digest ?? 8}">
+    </div>
+    <div class="card"><div class="title">Состояние</div>
+      <div class="shop"><span class="dot ${DATA.last_run ? "ok" : "new"}"></span><div class="grow">Последняя проверка<div class="muted">${ago(DATA.last_run)}${DATA.runs ? ` · всего ${DATA.runs}` : ""}</div></div></div>
+      <div class="shop"><span class="dot ${DATA.ai_on ? "ok" : "new"}"></span><div class="grow">Claude (умный разбор)<div class="muted">${DATA.ai_on ? "подключён" : "нет ключа ANTHROPIC_API_KEY в секретах GitHub"}</div></div></div>
+      <div class="shop"><span class="dot ${DATA.home_on ? "ok" : "new"}"></span><div class="grow">Домашний компьютер<div class="muted">${DATA.home_on ? "подключён" : "не подключён"}</div></div></div>
+    </div>`;
+  const upd = () => {
+    const on = $("#qOn").checked;
+    cfgEdit.quiet = on ? `${parseInt($("#qA").value || 23)}-${parseInt($("#qB").value || 8)}` : "";
+    cfgEdit.drop = num($("#drop").value); cfgEdit.digest = num($("#digest").value);
+    const base = DATA.cfg || {};
+    Object.keys(cfgEdit).forEach(k => { if (String(cfgEdit[k] ?? "") === String(base[k] ?? "")) delete cfgEdit[k]; });
+    refresh();
+  };
+  ["#qOn", "#qA", "#qB", "#drop", "#digest"].forEach(id => $(id).addEventListener(id === "#qOn" ? "change" : "input", () => { upd(); if (id === "#qOn") renderSettings(); }));
+}
+
+// ---------------------------------------------------------------- save
 const FIELDS = ["q", "xq", "mn", "mx", "cur", "dc", "r", "y", "ex", "inc", "any", "st", "stk", "en"];
 function ops() {
   const out = [];
-  const t = document.getElementById("newText").value.trim();
-  if (t) out.push({ op: "add", text: t });
+  let t = $("#newText").value.trim();
+  if (t) {
+    const mx = num($("#newMax").value), dc = num($("#newDisc").value), cur = $("#newCur").value;
+    if (mx) t += ` до ${mx}${cur === "USD" ? "$" : cur === "EUR" ? "€" : " лей"}`;
+    if (dc) t += ` скидка ${dc}%`;
+    out.push({ op: "add", text: t });
+  }
   state.forEach((w, i) => {
     if (deleted.has(w.h)) { out.push({ op: "del", h: w.h }); return; }
-    const f = {};
-    FIELDS.forEach(k => { if (JSON.stringify(w[k] ?? null) !== JSON.stringify(orig[i][k] ?? null)) f[k] = w[k] ?? null; });
+    const f = {}; FIELDS.forEach(k => { if (JSON.stringify(w[k] ?? null) !== JSON.stringify(orig[i][k] ?? null)) f[k] = w[k] ?? null; });
     if (Object.keys(f).length) out.push({ op: "upd", h: w.h, f });
   });
+  if (Object.keys(cfgEdit).length) out.push({ op: "cfg", f: cfgEdit });
   return out;
 }
-
-function refreshButton() {
+function refresh() {
   const n = ops().length;
-  if (tg && tg.MainButton) {
-    if (n) { tg.MainButton.setText(n === 1 ? "Сохранить" : `Сохранить (${n})`); tg.MainButton.show(); } else tg.MainButton.hide();
-  } else {
-    document.getElementById("fallbackSave").style.display = n ? "block" : "none";
+  const label = n > 1 ? `Сохранить (${n})` : "Сохранить";
+  if (tg && tg.MainButton && inTelegram) { if (n) { tg.MainButton.setText(label); tg.MainButton.show(); } else tg.MainButton.hide(); }
+  else { $("#save").textContent = label; $("#save").style.display = n ? "block" : "none"; }
+}
+function save() {
+  const payload = JSON.stringify({ v: 2, ops: ops() });
+  if (payload.length > 4000) { (tg && tg.showAlert ? tg.showAlert.bind(tg) : alert)("Слишком много изменений за раз — сохраните часть и повторите."); return; }
+  try {
+    if (!tg || !inTelegram) throw new Error("not in telegram");
+    tg.sendData(payload);     // closes the app; the bot replies in the chat within seconds
+  } catch (e) {
+    const msg = "Сохранить можно только из приложения, открытого кнопкой «⚙️ Управление» внизу чата с ботом.";
+    tg && tg.showAlert ? tg.showAlert(msg) : alert(msg);
   }
 }
-
-function save() {
-  const payload = JSON.stringify({ v: 1, ops: ops() });
-  if (tg && tg.sendData) tg.sendData(payload);
-  else alert("Откройте эту страницу из бота в Telegram.\n" + payload);
-}
-document.getElementById("newText").addEventListener("input", refreshButton);
 if (tg && tg.MainButton) tg.MainButton.onClick(save);
-document.getElementById("fallbackSave").onclick = save;
-if (!tg || !tg.initData) document.getElementById("sub").textContent = "Откройте через кнопку «⚙️ Управление» в боте.";
-render(); refreshButton();
+$("#save").onclick = save;
+$("#newText").addEventListener("input", refresh);
+["#newMax", "#newDisc", "#newCur"].forEach(id => $(id).addEventListener("input", refresh));
 
-// live data: the bot keeps a snapshot in state.json on the public "state" branch
-(async () => {
+// ---------------------------------------------------------------- tabs, status, live data
+document.querySelectorAll("nav button").forEach(b => b.onclick = () => {
+  document.querySelectorAll("nav button").forEach(x => x.classList.toggle("active", x === b));
+  document.querySelectorAll(".tab").forEach(t => t.classList.toggle("active", t.id === "tab-" + b.dataset.tab));
+  if (tg && tg.HapticFeedback) tg.HapticFeedback.selectionChanged();
+});
+function renderAll() {
+  renderList(); renderShops(); renderSettings(); refresh();
+  const st = $("#status");
+  st.textContent = DATA.last_run ? "проверка " + ago(DATA.last_run) : (DATA.t ? "данные " + ago(DATA.t) : "нет данных");
+  st.classList.toggle("on", !!DATA.last_run && Date.now() / 1000 - DATA.last_run < 1800);
+}
+if (!inTelegram) { const b = $("#banner"); b.style.display = "block"; b.textContent = "Откройте приложение кнопкой «⚙️ Управление» внизу чата с ботом — тогда изменения сохранятся."; }
+renderAll();
+
+(async () => {   // live data from the public "state" branch: top offers, shop health, settings
   if (!DATA.r) return;
   try {
     const r = await fetch(`https://raw.githubusercontent.com/${DATA.r}/state/state.json?ts=${Date.now()}`, { cache: "no-store" });
     if (!r.ok) return;
     const live = (await r.json()).app;
-    if (!live || !(live.t > (DATA.t || 0)) || ops().length) return;   // keep the user's unsaved edits
-    DATA.t = live.t; DATA.s = live.s || DATA.s;
-    STORES.splice(0, STORES.length, ...(live.s || STORES));
-    orig.splice(0, orig.length, ...JSON.parse(JSON.stringify(live.w || [])));
-    state.splice(0, state.length, ...JSON.parse(JSON.stringify(live.w || [])));
-    render(); refreshButton();
-  } catch (e) { /* offline: the snapshot from the button is used */ }
+    if (!live) return;
+    const edits = ops().length > 0;
+    const newer = (live.t || 0) > (DATA.t || 0);
+    const byH = Object.fromEntries((live.w || []).map(w => [w.h, w]));
+    if (newer && !edits) { DATA = Object.assign({}, DATA, live); orig = clone(live.w || []); state = clone(live.w || []); }
+    else {                                          // keep the button's newer criteria, add live offers/health
+      ["health", "last_run", "runs", "home_on", "ai_on", "cfg"].forEach(k => { if (live[k] !== undefined) DATA[k] = live[k]; });
+      if (live.s) DATA.s = live.s;
+      state.forEach(w => { if (byH[w.h]) { w.top = byH[w.h].top; } });
+      orig.forEach(w => { if (byH[w.h]) { w.top = byH[w.h].top; } });
+    }
+    renderAll();
+  } catch (e) { /* offline: the button snapshot is enough */ }
 })();
 </script>
 </body>
