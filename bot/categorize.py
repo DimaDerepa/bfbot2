@@ -5,7 +5,7 @@ Returns an empty set when unsure -> all stores are queried.
 """
 from __future__ import annotations
 
-from .text import has_term, norm
+from .text import has_term, norm, split_glued
 
 KEYWORDS: dict[str, list[str]] = {
     "electronics": [
@@ -55,5 +55,6 @@ def infer_categories(query: str) -> set[str]:
     q = norm(query or "")
     if not q:
         return set()
+    q = split_glued(q)          # "rtx5070" -> "rtx 5070", "iphone16" -> "iphone 16"
     found = {cat for cat, words in KEYWORDS.items() if any(has_term(q, w) for w in words)}
     return found

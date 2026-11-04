@@ -74,3 +74,33 @@ def test_raise_if_challenge_only_on_block_pages():
                  "<title>Pardon Our Interruption</title>", "<script src='https://geo.captcha-delivery.com/x'></script>"):
         with pytest.raises(BlockedError):
             raise_if_challenge(page, make_soup(page), "https://x.ro/")
+
+
+def test_num_thousands_dot_is_not_a_decimal():
+    # visible Romanian text "1.299" is 1299 lei (research: '.' + exactly 3 digits = thousands separator)
+    assert num("1.299") == 1299.0 and num("12.999") == 12999.0 and num("1.299.000") == 1299000.0
+    assert num("269.99") == 269.99 and num("1299.990") == 1299.99 and num("449.5") == 449.5
+
+
+def test_price_label_on_its_own_line_or_element():
+    info = price_lines(["Prețul inițial", "549,99 lei", "449,99 lei"])
+    assert info["price"] == 449.99 and info["original"] == 549.99
+    info = price_lines(["449,99 lei", "Cel mai mic preț din ultimele 30 de zile:", "470,00 lei", "Inițial:", "549,99 lei"])
+    assert (info["price"], info["original"], info["lowest"]) == (449.99, 549.99, 470.0)
+    # a brand containing "Original(s)" is not a price label
+    assert price_lines(["adidas Originals", "449,99 lei", "549,99 lei"])["price"] == 449.99
+    assert labeled_prices(["Cel mai mic preț din ultimele 30 de zile:", "1.349 lei"]) == (None, 1349.0)
+    assert labeled_prices(["adidas Originals", "99 lei"]) == (None, None)
+
+
+def test_landed_on_home_locale_roots_only():
+    assert landed_on_home("https://www.douglas.ro/ro/search?q=x", "https://www.douglas.ro/ro/")
+    assert landed_on_home("https://www.douglas.ro/ro/search?q=x", "https://www.douglas.ro/")
+    # a two-letter brand page is a listing, not the home page (Zalando /catalog/?q=hm -> /hm/)
+    assert not landed_on_home("https://www.zalando.ro/catalog/?q=hm", "https://www.zalando.ro/hm/")
+    assert not landed_on_home("https://www.zalando.ro/catalog/?q=x", "https://www.zalando.ro/catalog/?q=x")
+
+
+def test_almost_sold_out_is_in_stock():
+    assert stock_from_text("Stoc aproape epuizat") is True and stock_from_text("Produs aproape epuizat!") is True
+    assert stock_from_text("Epuizat") is False and stock_from_text("Stoc epuizat") is False

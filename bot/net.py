@@ -1,6 +1,7 @@
 """HTTP layer: browser-like TLS fingerprint (curl_cffi), retries, per-host politeness, block detection."""
 from __future__ import annotations
 
+import codecs
 import email.utils
 import json
 import logging
@@ -100,7 +101,57 @@ class Response:
     headers: dict
 
     def json(self) -> Any:
-        return json.loads(self.text)
+        return json.loads(self.text.lstrip("\ufeff"))     # some PHP APIs send a UTF-8 BOM
+
+
+_CHARSET_RE = re.compile(r"""charset\s*=\s*["']?\s*([\w.:-]+)""", re.I)
+_META_CHARSET_RE = re.compile(rb"""<meta[^>]{0,200}?charset\s*=\s*["']?\s*([\w.:-]+)""", re.I)
+_CHARSET_ALIASES = {"utf8mb4": "utf-8", "utf8": "utf-8", "none": ""}   # MySQL names seen in PHP shops' headers
+
+
+def _codec(name: Optional[str]) -> Optional[str]:
+    name = _CHARSET_ALIASES.get((name or "").strip().lower(), (name or "").strip().lower())
+    if not name:
+        return None
+    try:
+        return codecs.lookup(name).name
+    except LookupError:
+        return None
+
+
+def body_text(r: Any) -> str:
+    """Body of a curl_cffi / requests response as text. Never raises on a wrong or unknown charset.
+
+    Charset: Content-Type header -> <meta charset> -> UTF-8, or cp1250 (Romanian legacy pages) when the
+    undeclared body is not valid UTF-8. A UTF-8 BOM is dropped.
+    """
+    content = getattr(r, "content", None)
+    if not isinstance(content, (bytes, bytearray)):
+        return (r.text or "").lstrip("\ufeff")
+    if not content:
+        return ""
+    ctype = ""
+    for k, v in dict(getattr(r, "headers", None) or {}).items():
+        if str(k).lower() == "content-type":
+            ctype = str(v)
+    m = _CHARSET_RE.search(ctype)
+    declared = _codec(m.group(1)) if m else None
+    enc = declared
+    if enc is None and "json" not in ctype.lower():
+        mm = _META_CHARSET_RE.search(bytes(content[:4096]))
+        enc = _codec(mm.group(1).decode("ascii", "ignore")) if mm else None
+    content = bytes(content)
+    if enc in (None, "utf-8"):
+        try:
+            text = content.decode("utf-8")
+        except UnicodeDecodeError:
+            text = content.decode("utf-8" if enc else "cp1250", errors="replace")
+    else:
+        try:
+            text = content.decode(enc, errors="replace")
+        except LookupError:        # a non-text codec name ("rot13", "base64") in a broken header
+            text = content.decode("utf-8", errors="replace")
+    return text.lstrip("\ufeff")
 
 
 class _HostThrottle:
@@ -299,10 +350,6 @@ class Http:
                 if json_body is not None:
                     kw["json"] = json_body
                 r = self.session.request(method, url, **kw)
-                self.requests_made += 1
-                text = r.text or ""
-                resp = Response(url=str(r.url), status=r.status_code, text=text, headers=dict(r.headers))
-                self.last_response = resp
             except Exception as e:  # network error / timeout
                 last_exc = FetchError(f"{type(e).__name__}: {e}", None, url)
                 net_failures += 1
@@ -311,6 +358,11 @@ class Http:
                 if net_failures > NET_RETRIES or attempt >= self.retries or not self._pause(2.0 * net_failures, started):
                     break
                 continue
+            self.requests_made += 1
+            # decoded outside the network try: a bad charset is not a "timeout" (it would mark the store down)
+            text = body_text(r)
+            resp = Response(url=str(r.url), status=r.status_code, text=text, headers=dict(r.headers or {}))
+            self.last_response = resp
             if allow_blocked:
                 return resp
             if resp.status in (429, 500, 502, 503, 504) and attempt < self.retries:

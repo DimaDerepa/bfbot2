@@ -55,3 +55,27 @@ def test_elefant_id():
     assert elefant_id("https://www.elefant.ro/x/carte-12345.html") == "12345"
     assert elefant_id("https://www.elefant.ro/x/carte_ab12cd34.html") == "ab12cd34"
     assert elefant_id("https://www.elefant.ro/carti/") is None
+
+
+ELEFANT_PDP = """<html><head><title>Harry Potter si piatra filozofala | elefant.ro</title>
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"Product","name":"Harry Potter si piatra filozofala",
+ "sku":"9786063312478","offers":{"@type":"Offer","price":"1.299,00","priceCurrency":"RON",
+ "availability":"https://schema.org/InStock"}}</script></head><body><h1>Harry Potter si piatra filozofala</h1>
+<div class="related"><div class="product-tile"><a class="product-title" href="/harry-potter-2-12345.html">Harry Potter 2</a>
+<div class="product-price"><div class="current-price">59,99 lei</div></div></div></div></body></html>"""
+
+
+def test_elefant_search_redirected_to_product_page():
+    http = FakeHttp({"elefant.ro/search": ELEFANT_PDP})
+    orig = http.request
+
+    def request(method, url, **kw):
+        r = orig(method, url, **kw)
+        r.url = "https://www.elefant.ro/harry-potter-si-piatra-filozofala_5f2e8c1d.html"
+        return r
+    http.request = request
+    store = make_store(ElefantStore, http)
+    offers = store.search("harry potter piatra filozofala")
+    assert store.last_strategy == "product-page"
+    assert [(o.title, o.price, o.in_stock) for o in offers] == [("Harry Potter si piatra filozofala", 1299.0, True)]
+    assert offers[0].url == "https://www.elefant.ro/harry-potter-si-piatra-filozofala_5f2e8c1d.html"

@@ -135,7 +135,9 @@ class NotinoStore(NextPager, Store):
             self.last_strategy = "redirect:home"
             return []
         state = apollo_state(html, soup)
-        on_product = not urlsplit(final).path.lower().startswith("/search")
+        # a product detail page (add-to-cart form with productId / a /p-{id}/ URL), not a brand or category listing
+        on_product = not urlsplit(final).path.lower().startswith("/search") and (
+            bool(notino_variant(final)) or soup.select_one("input[name=productId]") is not None)
         if on_product:
             # the search went straight to a product page: its variants, not the "similar products" tiles
             variants = self.apollo_offers(state, final)

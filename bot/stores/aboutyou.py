@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import os
 import re
+import time
 from typing import Any, Optional
 from urllib.parse import quote, urlencode
 
@@ -34,7 +35,10 @@ from ._fashion import dedupe, dig, join_title, minor, norm, slugify
 API_URL = "https://api-cloud.aboutyou.de/v1/products"
 SHOP_ENV = "ABOUTYOU_SHOP_ID"
 _SHOP_RE = re.compile(r"""(?:["']?shopId["']?\s*[:=]\s*["']?|shopId=|x-shop-id["']?\s*[:=]\s*["']?)(\d{1,6})""", re.I)
-_SHOP_CACHE: dict[str, Optional[str]] = {}
+# discovered shop id per process: (id or None, monotonic expiry) - a miss is retried after an hour (daemon mode)
+_SHOP_CACHE: dict[str, tuple[Optional[str], float]] = {}
+_HIT_TTL = 24 * 3600.0
+_MISS_TTL = 3600.0
 
 
 def find_shop_id(html: str) -> Optional[str]:
@@ -66,8 +70,9 @@ class AboutYouStore(Store):
         env = norm(os.environ.get(SHOP_ENV))
         if env:
             return env
-        if self.key in _SHOP_CACHE:
-            return _SHOP_CACHE[self.key]
+        cached = _SHOP_CACHE.get(self.key)
+        if cached is not None and time.monotonic() < cached[1]:
+            return cached[0]
         sid: Optional[str] = None
         try:
             sid = find_shop_id(self.http.get(self.base_url + "/").text)
@@ -75,7 +80,7 @@ class AboutYouStore(Store):
             raise
         except FetchError:
             sid = None
-        _SHOP_CACHE[self.key] = sid
+        _SHOP_CACHE[self.key] = (sid, time.monotonic() + (_HIT_TTL if sid else _MISS_TTL))
         return sid
 
     def search_url(self, query: str, shop_id: str, page: int = 1) -> str:

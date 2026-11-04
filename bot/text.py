@@ -23,7 +23,7 @@ UNITS = (
 )
 _UNIT_ALT = "|".join(sorted(UNITS, key=len, reverse=True))
 _JOIN_UNIT_RE = re.compile(rf"(\d)\s+({_UNIT_ALT})\b")
-_INCH_RE = re.compile(r"(\d)\s*(?:\"|''|”|″)")
+_INCH_RE = re.compile(r"(\d)\s*(?:\"|''|”|″|′′)")      # NFKD turns "″" into "′′"
 _NON_WORD_RE = re.compile(r"[^0-9a-z.+/\-\s]")
 _SPACES_RE = re.compile(r"\s+")
 _TOKEN_RE = re.compile(r"[0-9a-z]+(?:[.+][0-9a-z]+)*")
@@ -119,8 +119,8 @@ def slug(text: str) -> str:
     When letters were dropped ('Телевизор LG') or nothing is left ('Подарок маме'), a short stable hash of the
     original name is appended, so 'Телевизор LG' and 'Монитор LG' no longer share the id 'lg'."""
     text = "" if text is None else str(text)
-    # norm() now maps "™" to a space; ids created before that kept NFKD's "tm" ("rtx™ 5070" -> "rtxtm-5070")
-    legacy = text.replace("™", "TM").replace("℠", "SM")
+    # ids made before norm() mapped "™" to a space and read "″" as inch keep their old form ("rtx™ 5070" -> "rtxtm-5070")
+    legacy = text.replace("™", "TM").replace("℠", "SM").replace("″", " ")
     s = re.sub(r"[^0-9a-z]+", "-", norm(legacy)).strip("-")
     if s and not _drops_letters(text):
         return s[:60]

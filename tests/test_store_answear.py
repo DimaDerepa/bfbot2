@@ -73,3 +73,30 @@ def test_answear_helpers():
     assert find_tracker_id('{"tracker_id": "123456-654321"}') == "123456-654321"
     assert find_tracker_id("2026-11-04 0371-123456") is None
     assert answear_id("https://answear.ro/p/x-y-1209285.html") == "1209285"
+
+
+def test_answear_text_prices_with_thousands_and_absolute_url(monkeypatch):
+    monkeypatch.setenv(answear_mod.TRACKER_ENV, "312904-418722")
+    data = {"results": {"total_hits": 1, "hits": [{
+        "type": "product", "url": "https://answear.ro/p/the-north-face-geaca-de-puf-1300777.html?lb=1#x",
+        "attributes": {"title": ["Geaca de puf Nuptse"], "brand": ["The North Face"], "price": ["1.299,00 lei"],
+                       "price_old": "1.599,00 lei", "availability": "1", "id": ["1300777"],
+                       "image_link": "https://img2.ans-media.com/i/356x473/AW26-KUD0EA_99X_F1.jpg"}}]}}
+    offers = make_store(AnswearStore, FakeHttp({"live.luigisbox.com/search": data})).search("nuptse")
+    assert len(offers) == 1
+    o = offers[0]
+    assert o.title == "The North Face Geaca de puf Nuptse"
+    assert o.price == 1299.0 and o.old_price == 1599.0 and o.in_stock is True and o.offer_id == "1300777"
+    assert o.url == "https://answear.ro/p/the-north-face-geaca-de-puf-1300777.html"
+
+
+def test_answear_tracker_miss_is_retried_after_ttl(monkeypatch):
+    clock = [1000.0]
+    monkeypatch.setattr(answear_mod.time, "monotonic", lambda: clock[0])
+    http = FakeHttp({"https://answear.ro/": "<html>maintenance</html>"})
+    store = make_store(AnswearStore, http)
+    assert store.search("rochie") == [] and store.search("rochie") == []
+    assert http.calls == ["https://answear.ro/"]                       # miss cached for a while
+    clock[0] += answear_mod._MISS_TTL + 1                              # daemon mode: an hour later it is retried
+    http.routes = {"live.luigisbox.com/search": HITS, "https://answear.ro/": HOME}
+    assert store.search("tommy jeans") and http.calls[1] == "https://answear.ro/"

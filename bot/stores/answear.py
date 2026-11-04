@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import os
 import re
+import time
 from typing import Optional
 from urllib.parse import urlencode, urlsplit
 
@@ -34,7 +35,11 @@ _TRACKER_CTX_RE = re.compile(r"""tracker[_-]?id["']?\s*[:=]\s*["'](\d{3,8}-\d{3,
 _LBX_RE = re.compile(r"""(https?:)?//scripts\.luigisbox\.(?:com|tech)/(LBX-\d+)\.js""", re.I)
 _ID_RE = re.compile(r"-(\d{4,})\.html$")
 
-_TRACKER_CACHE: dict[str, Optional[str]] = {}
+# discovered tracker id per process: (id or None, monotonic expiry). `python -m bot daemon` runs for weeks, so a
+# miss (home page down / no id in it) is retried after an hour and a hit is re-checked daily.
+_TRACKER_CACHE: dict[str, tuple[Optional[str], float]] = {}
+_HIT_TTL = 24 * 3600.0
+_MISS_TTL = 3600.0
 
 
 def answear_id(url: Optional[str]) -> Optional[str]:
@@ -70,8 +75,9 @@ class AnswearStore(Store):
         env = norm(os.environ.get(TRACKER_ENV))
         if env:
             return env
-        if "answear" in _TRACKER_CACHE:
-            return _TRACKER_CACHE["answear"]
+        cached = _TRACKER_CACHE.get("answear")
+        if cached is not None and time.monotonic() < cached[1]:
+            return cached[0]
         tid: Optional[str] = None
         try:
             resp = self.http.get(self.base_url + "/")
@@ -87,7 +93,7 @@ class AnswearStore(Store):
             raise
         except FetchError:
             tid = None
-        _TRACKER_CACHE["answear"] = tid
+        _TRACKER_CACHE["answear"] = (tid, time.monotonic() + (_HIT_TTL if tid else _MISS_TTL))
         return tid
 
     # ------------------------------------------------------------------ search

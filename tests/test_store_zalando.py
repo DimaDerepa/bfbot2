@@ -86,3 +86,38 @@ def test_zalando_helpers():
     assert zalando_sku("https://www.zalando.ro/x-y-ad115o0ni-a11.html?x=1") == "AD115O0NI-A11"
     assert zalando_sku("https://www.zalando.ro/femei/") is None
     assert graphql_cache("<script>window.__hydrationDataConsume({broken</script>") == {}
+
+
+def test_zalando_sku_redirect_ignores_recommendation_cards():
+    reco = ('<article><a href="/nike-sportswear-air-force-1-ni112d0g1-a11.html"><img src="https://img01.ztat.net/x.jpg"></a>'
+            '<header><h3><span>Nike Sportswear</span><span>AIR FORCE 1</span></h3></header>'
+            '<section><p><span>599,99 lei</span></p></section></article>')
+    page = PDP.replace("<h1>SAMBA OG</h1>", "<h1>SAMBA OG</h1>" + reco)
+    http = FakeHttp({"zalando.ro/catalog/": page})
+    orig = http.request
+
+    def request(method, url, **kw):
+        r = orig(method, url, **kw)
+        r.url = "https://www.zalando.ro/adidas-originals-samba-og-sneakers-low-white-ad115o0ni-a11.html"
+        return r
+    http.request = request
+    offers = make_store(ZalandoStore, http).search("AD115O0NI-A11")
+    assert [(o.offer_id, o.price) for o in offers] == [("AD115O0NI-A11", 449.99)]
+
+
+def test_zalando_product_limited_availability_and_single_variant():
+    pdp = PDP.replace("https://schema.org/InStock", "https://schema.org/LimitedAvailability")
+    url = "https://www.zalando.ro/adidas-originals-samba-og-sneakers-low-white-ad115o0ni-a11.html"
+    o = make_store(ZalandoStore, FakeHttp({"zalando.ro/adidas-originals": pdp})).product(url)
+    assert o.in_stock is True and o.price == 449.99                 # LimitedAvailability = buyable
+    one = ('<script type="application/ld+json">{"@type": "ProductGroup", "name": "Tricou", "brand": {"name": "Puma"},'
+           ' "productGroupID": "pu142d0a1-q11", "hasVariant": {"@type": "Product", "offers": {"price": "1.299,00",'
+           ' "priceCurrency": "RON", "availability": "https://schema.org/OutOfStock"}}}</script>')
+    o = make_store(ZalandoStore, FakeHttp({"zalando.ro/x": one})).product("https://www.zalando.ro/x-pu142d0a1-q11.html")
+    assert o.price == 1299.0 and o.in_stock is False and o.offer_id == "PU142D0A1-Q11" and o.title == "Puma Tricou"
+
+
+def test_zalando_malformed_price_module_does_not_raise():
+    bad = HTML.replace('"displayPriceModule": {', '"displayPriceModule": ["x"], "_unused": {', 1)
+    offers = make_store(ZalandoStore, FakeHttp({"zalando.ro/catalog/": bad})).search("adidas samba")
+    assert offers[0].offer_id == "AD115O0NI-A11" and offers[0].price == 449.99 and offers[0].old_price == 549.99

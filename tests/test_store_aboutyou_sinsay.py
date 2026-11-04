@@ -82,3 +82,23 @@ def test_sinsay_without_algolia_uses_generic_extraction():
        "offers":{"@type":"Offer","price":"119.99","priceCurrency":"RON"}}}]}</script></body></html>"""
     offers = make_store(ReservedStore, FakeHttp({"reserved.com/ro/ro/": html})).search("tricou")
     assert [o.price for o in offers] == [29.99, 119.99]
+
+
+def test_aboutyou_malformed_entities_do_not_raise(monkeypatch):
+    monkeypatch.setenv(aboutyou_mod.SHOP_ENV, "562")
+    data = {"entities": [
+        {"id": 1, "attributes": "x", "variants": "y"},
+        {"id": 2, "attributes": {"brand": {"values": {"label": "Puma"}}, "name": {"values": [{"label": "Tricou"}]}},
+         "variants": [{"price": 4999, "stock": "many"}, {"price": {"currencyCode": "RON", "withTax": "4999"}, "stock": None}],
+         "priceRange": "z"},
+    ]}
+    http = FakeHttp({"api-cloud.aboutyou.de/v1/products": data})
+    offers = make_store(AboutYouStore, http).search("tricou puma")
+    assert http.calls[0].endswith("&shopId=562")
+    assert [(o.title, o.price, o.in_stock) for o in offers] == [("Puma Tricou", 49.99, False)]
+
+
+def test_reserved_search_url():
+    http = FakeHttp({"reserved.com/ro/ro/": "<html><body>nimic</body></html>"})
+    assert make_store(ReservedStore, http).search("blugi mom fit") == []
+    assert http.calls == ["https://www.reserved.com/ro/ro/?query=blugi%20mom%20fit"]

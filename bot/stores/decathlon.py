@@ -35,6 +35,26 @@ from ._fashion import (
 _RP_RE = re.compile(r"/R-p-([A-Za-z0-9-]+?)(?:/|$)")
 
 
+_PRICE_PART_RE = re.compile(r"\d\s*(?:lei|ron)\b|^[-–−]?\s*\d+\s*%$", re.I)
+
+
+def _brand_after_price(it: Tag, name: str) -> str:
+    """kutai decathlon_tr: the card text runs "name | price | BRAND | name again | (reviews)"; the short ALL-CAPS
+    part right after the price part(s) is the brand (ROCKRIDER, VAN RYSEL). Anything else -> ""."""
+    parts = [norm(t) for t in it.stripped_strings if norm(t)]
+    idx = [i for i, t in enumerate(parts) if _PRICE_PART_RE.search(t) or t.lower() in ("lei", "ron")]
+    if not idx:
+        return ""
+    i = idx[0]
+    while i + 1 < len(parts) and (i + 1 in idx):
+        i += 1
+    cand = parts[i + 1] if i + 1 < len(parts) else ""
+    if (cand and len(cand) <= 30 and len(cand.split()) <= 3 and cand.upper() == cand and re.search(r"[A-Z]", cand)
+            and not re.search(r"\d", cand) and cand.lower() != name.lower()):
+        return cand
+    return ""
+
+
 def decathlon_pid(url: Optional[str]) -> Optional[str]:
     m = _RP_RE.search(urlsplit(url or "").path)
     return m.group(1) if m else None
@@ -95,6 +115,8 @@ class DecathlonStore(NextPager, Store):
             if t and len(t) <= 30 and not re.search(r"\d.*lei", t, re.I):
                 brand = t
                 break
+        if not brand:
+            brand = _brand_after_price(it, name)
         title = join_title(brand, name)
         if len(title) < 3:
             return None

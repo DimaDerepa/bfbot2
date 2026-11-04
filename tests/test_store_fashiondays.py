@@ -77,3 +77,33 @@ def _redirect_to(http, final):
         resp.url = final
         return resp
     return request
+
+
+FD_PDP = """<html><head><title>Pantofi sport de piele Samba OG - adidas Originals | FashionDays.ro</title>
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"Product","name":"adidas Originals Pantofi sport de piele Samba OG",
+ "sku":"2547171-2","offers":{"@type":"Offer","price":"449.99","priceCurrency":"RON","availability":"https://schema.org/InStock"}}</script>
+</head><body><h1>Pantofi sport de piele Samba OG</h1>
+<ul class="similar-products"><li class="product-card"><a href="https://www.fashiondays.ro/p/tricou-p5512098/?gtm_data=x"
+  data-gtm-price="99.99" data-gtm-name="Tricou cu logo" data-gtm-brand-name="adidas Originals"></a></li></ul></body></html>"""
+
+
+def test_fashiondays_search_redirected_to_product_page():
+    http = FakeHttp({"fashiondays.ro/search/": FD_PDP})
+    store = make_store(FashionDaysStore, http)
+    store.http.request = _redirect_to(http, "https://www.fashiondays.ro/p/pantofi-sport-de-piele-samba-og-adidas-originals-p2547171-2/")
+    offers = store.search("samba og")
+    assert store.last_strategy == "product-page"
+    assert len(offers) == 1                                  # the "similar products" card is not returned
+    o = offers[0]
+    assert o.price == 449.99 and o.in_stock is True and o.offer_id == "2547171-2"
+    assert o.url == "https://www.fashiondays.ro/p/pantofi-sport-de-piele-samba-og-adidas-originals-p2547171-2/"
+
+
+def test_fashiondays_omnibus_label_beats_rrp():
+    html = """<ul><li class="product-card"><a href="/p/geaca-puma-p6100001/" data-gtm-price="299.99"
+      data-gtm-name="Geaca matlasata" data-gtm-brand-name="Puma" data-gtm-status="in_stock">
+      <div class="product-card-price"><span>PRP: 449,99 Lei</span><span class="product-card-price-new">299,99 Lei</span>
+      <span>Cel mai mic preț din ultimele 30 de zile:</span><span>349,99 Lei</span></div></a></li></ul>"""
+    o = make_store(FashionDaysStore, FakeHttp({"fashiondays.ro/search/": html})).search("geaca puma")[0]
+    assert o.title == "Puma Geaca matlasata" and o.price == 299.99
+    assert o.old_price == 349.99                             # EU 30-day low, not the 449,99 RRP

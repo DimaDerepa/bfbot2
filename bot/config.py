@@ -175,28 +175,84 @@ def load_config(path: str) -> Config:
 #   +word / +"two words"     must include       @a,b  only these stores   ^a,b skip stores
 #   #cat                     categories         !all  include out-of-stock   ~  loose title match
 #   ?a|b|c                   any of             http(s)://...  product URL to watch
+# Prices as people type them: 4800, 4.800, 4,800, "до 4 800", 3200,50, 5к / 5k / "5 тыс", with "lei"/"лей" after.
+# Bare "max"/"min" are NOT price words: "iphone 16 pro max 256" is a model name ("max=4800" is the English form).
 
 _TOKEN_RE = re.compile(r'([+\-]?"[^"]+"|\S+)')
+_QUOTES_RE = re.compile(r"[“”„‟«»]")          # iOS smart quotes / Russian keyboard quotes -> '"'
+_CURRENCY = {"lei", "ron", "lej", "лей", "леев", "лея", "леи"}
+_CYR_CURRENCY = {"лей", "леев", "лея", "леи"}
+_CURRENCY_SUFFIX_RE = re.compile(r"(?:lei|ron|lej|лей|леев|лея|леи)\.?$", re.IGNORECASE)
+_MULT_RE = re.compile(r"(?:к|k|тыс\.?|тысяч[аи]?)$", re.IGNORECASE)
+_MULT_WORDS = {"к", "k", "тыс", "тыс.", "тысяч", "тысячи", "тысяча"}
+_MAX_WORDS = {"до", "<", "<=", "≤"}
+_MIN_WORDS = {"от", ">", ">=", "≥"}
+_DISCOUNT_WORDS = {"скидка", "скидкой", "скидки", "discount"}
+_GROUP_RE = re.compile(r"\d{3}(?:[.,]\d{1,2})?(?:lei|ron|lej|лей|леев|лея|леи)?\.?", re.IGNORECASE)
+_BARE_PRICE_RE = re.compile(r"\d[\d.,]*(?:lei|ron|lej|лей|леев|лея|леи)\.?", re.IGNORECASE)
+_NUMBER_RE = re.compile(r"\d[\d.,]*")
+
+
+def _num(s: str) -> Optional[float]:
+    """Number as typed in a command: 4800, 4.800 / 4,800 (thousands), 3200,50 / 1.299,99 (decimals),
+    5к / 5k / 5тыс (x1000), optionally followed by lei/ron/лей."""
+    s = str(s).strip().lower().replace("\u00a0", "").replace("\u202f", "").replace(" ", "")
+    s = _CURRENCY_SUFFIX_RE.sub("", s)
+    mult = 1.0
+    m = _MULT_RE.search(s)
+    if m and m.start() > 0:
+        mult, s = 1000.0, s[:m.start()]
+    if not _NUMBER_RE.fullmatch(s):
+        return None
+    if re.fullmatch(r"\d{1,3}(\.\d{3})+(,\d+)?", s):
+        s = s.replace(".", "").replace(",", ".")
+    elif re.fullmatch(r"\d{1,3}(,\d{3})+(\.\d+)?", s):          # "3,200" is 3200 lei, not 3.2
+        s = s.replace(",", "")
+    else:
+        s = s.replace(",", ".")
+    try:
+        return float(s) * mult
+    except ValueError:
+        return None
+
+
+def _take_number(toks: list[str], j: int, first: Optional[str] = None) -> tuple[Optional[float], int]:
+    """Read a price that starts at toks[j] (`first` = the part after a glued '<'/'>'): a thousands group typed
+    after a space is joined ('до 4 800' -> 4800, '<3 200' -> 3200), then a separate 'к'/'тыс' multiplier and a
+    currency word are consumed. Only called right after a price operator, so query words are never merged.
+    Returns (value, index of the next unread token); value None when it is not a number."""
+    s = toks[j] if first is None else first
+    k = j + 1
+    if re.fullmatch(r"\d{1,3}", s) and k < len(toks) and _GROUP_RE.fullmatch(toks[k]):
+        s += toks[k]
+        k += 1
+    v = _num(s)
+    if v is None:
+        return None, j
+    if k < len(toks) and toks[k].lower() in _MULT_WORDS and not _MULT_RE.search(s):
+        v *= 1000
+        k += 1
+    if k < len(toks) and toks[k].lower() in _CURRENCY | {c + "." for c in _CURRENCY}:
+        k += 1
+    return v, k
+
+
+def _price_error(op: str) -> ValueError:
+    return ValueError(f"После «{op}» нужна цена числом, например: до 4800, от 3000, скидка 20")
 
 
 def parse_watch_spec(text: str) -> dict:
     spec: dict[str, Any] = {}
     query_words: list[str] = []
+    text = _QUOTES_RE.sub('"', text or "")
     toks = _TOKEN_RE.findall(text.strip())
+    prev_numeric_word = False          # the previous token became a query word that is a plain number
     i = 0
     while i < len(toks):
         t = toks[i]
         low = t.lower()
-        nxt = toks[i + 1] if i + 1 < len(toks) else None
-
-        def num(s: str) -> Optional[float]:
-            s = s.replace(" ", "").replace("лей", "").replace("lei", "").replace("ron", "")
-            s = s.replace(".", "").replace(",", ".") if re.fullmatch(r"\d{1,3}(\.\d{3})+(,\d+)?", s) else s.replace(",", ".")
-            try:
-                return float(s)
-            except ValueError:
-                return None
-
+        key = low.rstrip(":")
+        after_number_word, prev_numeric_word = prev_numeric_word, False
         if low.startswith(("http://", "https://")):
             spec.setdefault("urls", []).append(t)
         elif "=" in t and t.split("=", 1)[0].lower() in {
@@ -205,46 +261,87 @@ def parse_watch_spec(text: str) -> dict:
             k, v = t.split("=", 1)
             k = k.lower()
             if k in ("max", "min", "discount", "drop_pct"):
-                spec[{"max": "max_price", "min": "min_price", "discount": "min_discount"}.get(k, k)] = num(v)
+                n = _num(v.rstrip("%")) if v.strip() else None
+                if v.strip() and n is None:
+                    raise ValueError(f"Не понял число в «{t}». Пример: max=4800")
+                spec[{"max": "max_price", "min": "min_price", "discount": "min_discount"}.get(k, k)] = n
             elif k in ("stores", "skip", "exclude", "include", "any_of", "categories"):
-                key = {"skip": "skip_stores", "include": "must_include"}.get(k, k)
-                spec.setdefault(key, []).extend(_as_list(v))
+                fk = {"skip": "skip_stores", "include": "must_include"}.get(k, k)
+                spec.setdefault(fk, []).extend(_as_list(v))
             else:
                 spec["name"] = v
-        elif low in ("до", "max", "<=") and nxt and num(nxt) is not None:
-            spec["max_price"] = num(nxt)
-            i += 1
-        elif low in ("от", "min", ">=") and nxt and num(nxt) is not None:
-            spec["min_price"] = num(nxt)
-            i += 1
-        elif low in ("скидка", "discount") and nxt and num(nxt.rstrip("%")) is not None:
-            spec["min_discount"] = num(nxt.rstrip("%"))
-            i += 1
-        elif t.startswith("<") and num(t.lstrip("<=")) is not None:
-            spec["max_price"] = num(t.lstrip("<="))
-        elif t.startswith(">") and num(t.lstrip(">=")) is not None:
-            spec["min_price"] = num(t.lstrip(">="))
-        elif (t.startswith("%") and num(t[1:]) is not None) or (t.endswith("%") and num(t[:-1]) is not None):
-            spec["min_discount"] = num(t.strip("%"))
-        elif t.startswith("-") and len(t) > 1 and not t[1:].replace(".", "").isdigit():
-            spec.setdefault("exclude", []).append(t[1:].strip('"'))
+        elif key in _MAX_WORDS or key in _MIN_WORDS:
+            if i + 1 >= len(toks):
+                raise _price_error(t)
+            nt = toks[i + 1]
+            if key in _MIN_WORDS and nt.endswith("%") and _num(nt[:-1]) is not None:   # "от 25%" = discount
+                spec["min_discount"] = _num(nt[:-1])
+                i += 2
+                continue
+            v, j = _take_number(toks, i + 1)
+            if v is None:
+                raise _price_error(t)
+            spec["max_price" if key in _MAX_WORDS else "min_price"] = v
+            i = j
+            continue
+        elif key in _DISCOUNT_WORDS:
+            j = i + 1
+            if j < len(toks) and toks[j].lower() in ("от", ">", ">=", "≥", "from"):   # "скидка от 25%"
+                j += 1
+            d = _num(toks[j].rstrip("%")) if j < len(toks) else None
+            if d is None:
+                raise ValueError(f"После «{t}» нужен процент скидки, например: скидка 20")
+            spec["min_discount"] = d
+            j += 1
+            if j < len(toks) and toks[j] == "%":
+                j += 1
+            i = j
+            continue
+        elif t[0] in "<>≤≥" and len(t) > 1:
+            is_max = t[0] in "<≤"
+            rest = t[1:].lstrip("=")
+            if not is_max and rest.endswith("%") and _num(rest[:-1]) is not None:     # ">20%" = discount
+                spec["min_discount"] = _num(rest[:-1])
+            else:
+                v, j = _take_number(toks, i, first=rest)
+                if v is None:
+                    raise ValueError(f"Не понял цену «{t}». Пример: <4800 или >3000")
+                spec["max_price" if is_max else "min_price"] = v
+                i = j
+                continue
+        elif (t.startswith("%") and _num(t[1:]) is not None) or (t.endswith("%") and _num(t[:-1]) is not None):
+            spec["min_discount"] = _num(t.strip("%"))
+        elif re.fullmatch(r"-\d+(?:[.,]\d+)?%", t):                                     # "-20%" = discount
+            spec["min_discount"] = _num(t[1:-1])
+        elif t.startswith("-") and len(t) > 1:
+            spec.setdefault("exclude", []).append(t[1:].strip('"'))                     # "-128" excludes 128 too
         elif t.startswith("+") and len(t) > 1:
             spec.setdefault("must_include", []).append(t[1:].strip('"'))
-        elif t.startswith("@") and len(t) > 1:
-            spec.setdefault("stores", []).extend(_as_list(t[1:].lower()))
-        elif t.startswith("^") and len(t) > 1:
-            spec.setdefault("skip_stores", []).extend(_as_list(t[1:].lower()))
-        elif t.startswith("#") and len(t) > 1:
-            spec.setdefault("categories", []).extend(_as_list(t[1:].lower()))
+        elif t[0] in "@^#" and len(t) > 1:
+            val = t[1:]
+            # "@emag, altex" / "@emag ,altex": the comma continues the list over the space
+            while i + 1 < len(toks) and (val.endswith(",") or toks[i + 1].startswith(",")):
+                i += 1
+                val += toks[i]
+            field_ = {"@": "stores", "^": "skip_stores", "#": "categories"}[t[0]]
+            spec.setdefault(field_, []).extend(_as_list(val.lower()))
         elif t.startswith("?") and len(t) > 1:
-            spec.setdefault("any_of", []).extend([x for x in t[1:].split("|") if x])
+            spec.setdefault("any_of", []).extend([x.strip('"') for x in t[1:].split("|") if x.strip('"')])
         elif low == "!all":
             spec["in_stock"] = False
         elif low == "~":
             spec["strict"] = False
+        elif low.rstrip(".") in _CYR_CURRENCY:
+            pass                                                   # "лей" is never part of a product name
+        elif (after_number_word and low.rstrip(".") in _CURRENCY) or _BARE_PRICE_RE.fullmatch(low):
+            shown = f"{query_words[-1]} {t}" if after_number_word else t
+            raise ValueError(f"Не понял «{shown}». Цену пишите так: до 4800 (максимальная) или от 3000 (минимальная)")
         else:
-            query_words.append(t.strip('"'))
+            w = t.strip('"')
+            query_words.append(w)
+            prev_numeric_word = bool(_NUMBER_RE.fullmatch(w))
         i += 1
     if query_words:
         spec["query"] = " ".join(query_words)
+    check_latin(spec)
     return spec

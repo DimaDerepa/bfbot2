@@ -77,6 +77,9 @@ class SephoraStore(NextPager, Store):
     page_size = 48
     min_delay = 8.0
     extra_headers = _mobile_headers()
+    # pinned so that a global BOT_IMPERSONATE cannot desync the TLS profile from the Chrome major in the mobile UA
+    # (curl_cffi's own "chrome131_android" profile is older and sends sec-ch-ua-mobile ?0)
+    impersonate = "chrome"
     search_path = "/on/demandware.store/Sites-Sephora_RO-Site/ro_RO/Search-Show"
 
     def search_url(self, query: str, page: int = 1) -> str:

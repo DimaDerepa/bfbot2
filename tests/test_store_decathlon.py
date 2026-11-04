@@ -50,3 +50,18 @@ def test_decathlon_datadome_block():
 def test_decathlon_pid():
     assert decathlon_pid("https://www.decathlon.ro/p/x/_/R-p-344316?mc=8798812") == "344316"
     assert decathlon_pid("https://www.decathlon.ro/sporturi/") is None
+
+
+def test_decathlon_brand_from_card_text_after_price():
+    # no brand class: kutai's "name | price | BRAND | name again" text order
+    html = """<div data-supermodelid="8555001"><a class="dpb-product-model-link" href="/p/geaca-schi/_/R-p-300100?mc=8555001&amp;utm=x">
+      <span class="vh">Geacă schi caldă 500 Bărbați</span></a>
+      <span class="vtmn-price">1.149,99 lei</span><span class="vtmn-price vtmn-price--strikethrough">1.399,99 lei</span>
+      <span>-18%</span><span>WEDZE</span><h2>Geacă schi caldă 500 Bărbați</h2><span>(52)</span></div>
+      <div data-supermodelid="8555002"><a class="dpb-product-model-link" href="/p/cort/_/R-p-300101?mc=8555002">
+      <span class="vh">Cort 2 persoane</span></a><span class="vtmn-price">199 lei</span><span>Livrare gratuită</span></div>"""
+    offers = make_store(DecathlonStore, FakeHttp({"decathlon.ro/search": html})).search("geaca schi")
+    a, b = offers
+    assert a.title == "WEDZE Geacă schi caldă 500 Bărbați" and a.price == 1149.99 and a.old_price == 1399.99
+    assert a.url == "https://www.decathlon.ro/p/geaca-schi/_/R-p-300100?mc=8555001" and a.offer_id == "8555001"
+    assert b.title == "Cort 2 persoane" and b.price == 199.0               # "Livrare gratuită" is not a brand

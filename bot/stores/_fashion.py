@@ -463,13 +463,13 @@ def _visible_text(el: Tag) -> str:
 # --------------------------------------------------------------------------- stock
 
 _OUT_TXT = re.compile(
-    r"stoc\s+epuizat|\bepuizat|indisponibil|nu\s+(?:este|e|mai\s+este)\s+(?:[iî]n\s+)?stoc|nu\s+este\s+disponibil|"
+    r"stoc\s+epuizat|(?<!aproape\s)\bepuizat|indisponibil|nu\s+(?:este|e|mai\s+este)\s+(?:[iî]n\s+)?stoc|nu\s+este\s+disponibil|"
     r"f[aă]r[aă]\s+stoc|sold\s*[-_ ]?out|out\s+of\s+stock|unavailable|stoc\s*:\s*0\b",
     re.I,
 )
 _IN_TXT = re.compile(
     r"[iî]n\s+stoc|stoc\s+(?:limitat|suficient|disponibil)|ultimele\s+(?:buc|\d)|ultimul\s+produs|\bdisponibil\b|"
-    r"limited|in[_ ]stock|available|cantitate\s+limitat",
+    r"limited|in[_ ]stock|available|cantitate\s+limitat|aproape\s+epuizat",
     re.I,
 )
 

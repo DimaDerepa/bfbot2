@@ -70,3 +70,25 @@ def test_sephora_pid():
     assert sephora_pid("https://www.sephora.ro/p/flowerbomb---eau-de-parfum-128302.html") == "128302"
     assert sephora_pid("https://www.sephora.ro/p/le-parfum---eau-de-parfum-P569004.html") == "P569004"
     assert sephora_pid("https://www.sephora.ro/parfum/") is None
+
+
+def test_sephora_search_redirected_to_product_ignores_recommendations():
+    reco = ('<div class="product-tile" data-tcproduct="{&quot;product_pid&quot;: &quot;111&quot;, &quot;product_pid_name&quot;: '
+            '&quot;Good Girl&quot;, &quot;product_brand&quot;: &quot;CAROLINA HERRERA&quot;, &quot;product_url_page&quot;: '
+            '&quot;https://www.sephora.ro/p/good-girl-111.html&quot;, &quot;product_price_ati&quot;: &quot;499.00&quot;}"></div>')
+    http = FakeHttp({"Search-Show": PDP.replace("</body>", reco + "</body>")})
+    orig = http.request
+
+    def request(method, url, **kw):
+        r = orig(method, url, **kw)
+        r.url = "https://www.sephora.ro/p/le-parfum---eau-de-parfum-P569004.html"
+        return r
+    http.request = request
+    store = make_store(SephoraStore, http)
+    offers = store.search("elie saab le parfum")
+    assert store.last_strategy == "product-page"
+    assert [(o.offer_id, o.price, o.old_price) for o in offers] == [("P569004", 1299.0, 1529.0)]
+
+
+def test_sephora_tls_profile_pinned_to_ua():
+    assert SephoraStore.impersonate == "chrome"                   # the mobile UA's Chrome major follows this profile

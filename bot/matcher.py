@@ -59,11 +59,13 @@ class MatchResult:
 
 
 def _term_ok(t: str, term: str) -> bool:
-    """has_term, plus: a glued query word also matches when its parts are apart ("oled55c46la" ~ "OLED evo 55C46LA")."""
+    """has_term, plus: a glued word + model code also matches when its parts are apart ("oled55c46la" ~
+    "OLED evo 55C46LA"). A plain number stays attached ("iphone16" needs "iPhone 16", not "iPhone 15, 16GB")."""
     if has_term(t, term):
         return True
     m = _GLUED_RE.fullmatch(norm(term))
-    return bool(m) and has_term(t, m.group(1)) and has_term(t, m.group(2))
+    return (bool(m) and any(c.isalpha() for c in m.group(2))
+            and has_term(t, m.group(1)) and has_term(t, m.group(2)))
 
 
 def _strict_terms(query: str) -> list[str]:

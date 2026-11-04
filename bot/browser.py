@@ -93,6 +93,7 @@ class _Worker:
                     fut.set_exception(exc)
 
     def _run(self) -> None:
+        msg = "worker stopped"
         try:
             self._serve()
         except BaseException as e:  # Chromium missing / crashed: never leave callers waiting on a dead thread
@@ -101,6 +102,7 @@ class _Worker:
             with _Worker._lock:
                 _Worker._launch_error = msg
                 _Worker._launch_error_at = time.monotonic()
+        finally:
             with self.qlock:
                 self.dead = True                  # fetch() refuses new items from now on ...
             self._fail_pending(RuntimeError(f"headless browser unavailable: {msg}"))   # ... and queued ones fail
@@ -170,7 +172,7 @@ class _Worker:
         fut: Future = Future()
         with self.qlock:
             if self.dead:
-                raise RuntimeError(f"headless browser unavailable: {_Worker._launch_error or 'worker stopped'}")
+                raise RuntimeError(f"headless browser unavailable: {_Worker.launch_failed() or 'worker stopped'}")
             self.q.put((ctx_key, url, proxy, fut))
         try:
             return fut.result(timeout=timeout)
