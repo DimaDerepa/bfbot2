@@ -1,0 +1,86 @@
+{
+ "query": "parfum dior sauvage",
+ "time": 1793801486,
+ "import_errors": {},
+ "stores": {
+  "modivo": {
+   "name": "MODIVO",
+   "base_url": "https://modivo.ro",
+   "ok": false,
+   "error": "FetchError: HTTP 404",
+   "trace": "Traceback (most recent call last):\n  File \"/home/runner/work/bfbot2/bfbot2/bot/cli.py\", line 278, in one\n    offers = st.search(args.query)\n             ^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/runner/work/bfbot2/bfbot2/bot/stores/base.py\", line 48, in search\n    offers = self.search_page(query, page)\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/runner/work/bfbot2/bfbot2/bot/stores/modivo.py\", line 219, in search_page\n    html, soup, final = self.get_html(url)\n                        ^^^^^^^^^^^^^^^^^^\n  File \"/home/runner/work/bfbot2/bfbot2/bot/stores/base.py\", line 74, in get_html\n    resp = self.http.get(url, **kw)\n           ^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/runner/work/bfbot2/bfbot2/bot/net.py\", line 398, in get\n    return self.request(\"GET\", url, **kw)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/runner/work/bfbot2/bfbot2/bot/net.py\", line 388, in request\n    raise FetchError(f\"HTTP {resp.status}\", resp.status, url)\nbot.net.FetchError: HTTP 404\n",
+   "seconds": 1.7,
+   "browser_used": 0,
+   "status": 404,
+   "final_url": "https://modivo.ro/s/parfum%20dior%20sauvage?q=parfum%20dior%20sauvage",
+   "bytes": 1140734,
+   "content_type": "text/html; charset=utf-8"
+  },
+  "epantofi": {
+   "name": "ePantofi",
+   "base_url": "https://epantofi.ro",
+   "ok": false,
+   "error": "FetchError: HTTP 404",
+   "trace": "Traceback (most recent call last):\n  File \"/home/runner/work/bfbot2/bfbot2/bot/cli.py\", line 278, in one\n    offers = st.search(args.query)\n             ^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/runner/work/bfbot2/bfbot2/bot/stores/base.py\", line 48, in search\n    offers = self.search_page(query, page)\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/runner/work/bfbot2/bfbot2/bot/stores/modivo.py\", line 219, in search_page\n    html, soup, final = self.get_html(url)\n                        ^^^^^^^^^^^^^^^^^^\n  File \"/home/runner/work/bfbot2/bfbot2/bot/stores/base.py\", line 74, in get_html\n    resp = self.http.get(url, **kw)\n           ^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/runner/work/bfbot2/bfbot2/bot/net.py\", line 398, in get\n    return self.request(\"GET\", url, **kw)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/runner/work/bfbot2/bfbot2/bot/net.py\", line 388, in request\n    raise FetchError(f\"HTTP {resp.status}\", resp.status, url)\nbot.net.FetchError: HTTP 404\n",
+   "seconds": 0.8,
+   "browser_used": 0,
+   "status": 404,
+   "final_url": "https://epantofi.ro/s/parfum%20dior%20sauvage?q=parfum%20dior%20sauvage",
+   "bytes": 715129,
+   "content_type": "text/html; charset=utf-8"
+  },
+  "fashiondays": {
+   "name": "Fashion Days",
+   "base_url": "https://www.fashiondays.ro",
+   "ok": true,
+   "count": 0,
+   "strategy": "",
+   "sample": [],
+   "seconds": 0.2,
+   "browser_used": 0,
+   "status": 200,
+   "final_url": "https://www.fashiondays.ro/search/?q=parfum%20dior%20sauvage",
+   "bytes": 988,
+   "content_type": "text/html"
+  },
+  "sephora": {
+   "name": "Sephora",
+   "base_url": "https://www.sephora.ro",
+   "ok": false,
+   "error": "BlockedError: blocked even in browser (HTTP 403)",
+   "trace": " File \"/home/runner/work/bfbot2/bfbot2/bot/net.py\", line 398, in get\n    return self.request(\"GET\", url, **kw)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/runner/work/bfbot2/bfbot2/bot/net.py\", line 386, in request\n    raise BlockedError(f\"blocked (HTTP {resp.status})\", resp.status, url)\nbot.net.BlockedError: blocked (HTTP 403)\n\nDuring handling of the above exception, another exception occurred:\n\nTraceback (most recent call last):\n  File \"/home/runner/work/bfbot2/bfbot2/bot/cli.py\", line 278, in one\n    offers = st.search(args.query)\n             ^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/runner/work/bfbot2/bfbot2/bot/stores/base.py\", line 48, in search\n    offers = self.search_page(query, page)\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/runner/work/bfbot2/bfbot2/bot/stores/sephora.py\", line 91, in search_page\n    html, soup, final = self.get_html(url)\n                        ^^^^^^^^^^^^^^^^^^\n  File \"/home/runner/work/bfbot2/bfbot2/bot/stores/base.py\", line 74, in get_html\n    resp = self.http.get(url, **kw)\n           ^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/runner/work/bfbot2/bfbot2/bot/net.py\", line 402, in get\n    return self._browser_get(url, kw.get(\"params\"), blocked)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/runner/work/bfbot2/bfbot2/bot/net.py\", line 429, in _browser_get\n    raise BlockedError(f\"blocked even in browser (HTTP {resp.status})\", resp.status, full)\nbot.net.BlockedError: blocked even in browser (HTTP 403)\n",
+   "seconds": 73.7,
+   "browser_used": 1,
+   "status": 403,
+   "final_url": "https://www.sephora.ro/cautare?q=parfum%20dior%20sauvage&sz=48&start=0",
+   "bytes": 300,
+   "content_type": "text/html"
+  },
+  "elefant": {
+   "name": "elefant.ro",
+   "base_url": "https://www.elefant.ro",
+   "ok": false,
+   "error": "BlockedError: blocked even in browser (HTTP 403)",
+   "trace": " File \"/home/runner/work/bfbot2/bfbot2/bot/net.py\", line 398, in get\n    return self.request(\"GET\", url, **kw)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/runner/work/bfbot2/bfbot2/bot/net.py\", line 386, in request\n    raise BlockedError(f\"blocked (HTTP {resp.status})\", resp.status, url)\nbot.net.BlockedError: blocked (HTTP 403)\n\nDuring handling of the above exception, another exception occurred:\n\nTraceback (most recent call last):\n  File \"/home/runner/work/bfbot2/bfbot2/bot/cli.py\", line 278, in one\n    offers = st.search(args.query)\n             ^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/runner/work/bfbot2/bfbot2/bot/stores/base.py\", line 48, in search\n    offers = self.search_page(query, page)\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/runner/work/bfbot2/bfbot2/bot/stores/elefant.py\", line 62, in search_page\n    html, soup, final = self.get_html(url)\n                        ^^^^^^^^^^^^^^^^^^\n  File \"/home/runner/work/bfbot2/bfbot2/bot/stores/base.py\", line 74, in get_html\n    resp = self.http.get(url, **kw)\n           ^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/runner/work/bfbot2/bfbot2/bot/net.py\", line 402, in get\n    return self._browser_get(url, kw.get(\"params\"), blocked)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/runner/work/bfbot2/bfbot2/bot/net.py\", line 429, in _browser_get\n    raise BlockedError(f\"blocked even in browser (HTTP {resp.status})\", resp.status, full)\nbot.net.BlockedError: blocked even in browser (HTTP 403)\n",
+   "seconds": 26.9,
+   "browser_used": 1,
+   "status": 403,
+   "final_url": "https://www.elefant.ro/search?SearchTerm=parfum%20dior%20sauvage",
+   "bytes": 45099,
+   "content_type": "text/html; charset=UTF-8"
+  },
+  "decathlon": {
+   "name": "Decathlon",
+   "base_url": "https://www.decathlon.ro",
+   "ok": false,
+   "error": "BlockedError: blocked even in browser (HTTP 403)",
+   "trace": "ile \"/home/runner/work/bfbot2/bfbot2/bot/net.py\", line 398, in get\n    return self.request(\"GET\", url, **kw)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/runner/work/bfbot2/bfbot2/bot/net.py\", line 386, in request\n    raise BlockedError(f\"blocked (HTTP {resp.status})\", resp.status, url)\nbot.net.BlockedError: blocked (HTTP 403)\n\nDuring handling of the above exception, another exception occurred:\n\nTraceback (most recent call last):\n  File \"/home/runner/work/bfbot2/bfbot2/bot/cli.py\", line 278, in one\n    offers = st.search(args.query)\n             ^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/runner/work/bfbot2/bfbot2/bot/stores/base.py\", line 48, in search\n    offers = self.search_page(query, page)\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/runner/work/bfbot2/bfbot2/bot/stores/decathlon.py\", line 84, in search_page\n    html, soup, final = self.get_html(url)\n                        ^^^^^^^^^^^^^^^^^^\n  File \"/home/runner/work/bfbot2/bfbot2/bot/stores/base.py\", line 74, in get_html\n    resp = self.http.get(url, **kw)\n           ^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/runner/work/bfbot2/bfbot2/bot/net.py\", line 402, in get\n    return self._browser_get(url, kw.get(\"params\"), blocked)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/runner/work/bfbot2/bfbot2/bot/net.py\", line 429, in _browser_get\n    raise BlockedError(f\"blocked even in browser (HTTP {resp.status})\", resp.status, full)\nbot.net.BlockedError: blocked even in browser (HTTP 403)\n",
+   "seconds": 53.2,
+   "browser_used": 1,
+   "status": 403,
+   "final_url": "https://www.decathlon.ro/search?Ntt=parfum+dior+sauvage",
+   "bytes": 45071,
+   "content_type": "text/html; charset=UTF-8"
+  }
+ }
+}
