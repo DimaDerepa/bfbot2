@@ -445,3 +445,53 @@ def test_undecodable_body_is_not_a_network_failure(clock):
 
     h.session = S()
     assert "2.499 lei" in h.get("https://x.ro/").text and S.calls == 1
+
+
+# --------------------------------------------------------------------------- verifier: budget edge cases
+
+def test_no_politeness_sleep_after_the_last_attempt(clock):
+    # a slow store's per-host delay (8 s) with no backoff: the throttle wait must not run past the budget
+    # and must never be the last thing the request does (that was a sleep after the final attempt)
+    h, s = make_http(clock, [429], backoff=0.0, retries=10)
+    h.delay = 8.0
+    ends: list[float] = []
+    real = s.request
+
+    def timed(method, url, **kw):
+        try:
+            return real(method, url, **kw)
+        finally:
+            ends.append(clock.t)
+
+    s.request = timed
+    t0 = clock.t
+    with pytest.raises(BlockedError):
+        h.request("GET", "https://slow.ro/")
+    assert clock.t - t0 <= h.max_time + 1e-6
+    assert clock.t == ends[-1]                     # nothing slept after the last answer
+
+
+def test_throttle_deadline_does_not_take_the_slot(clock):
+    th = net._HostThrottle()
+    assert th.wait("a.ro", 10.0) is True           # first request: slot taken, next one in 8..13 s
+    nxt = th._next["a.ro"]
+    assert th.wait("a.ro", 10.0, deadline=clock.t + 1.0) is False
+    assert th._next["a.ro"] == nxt and clock.sleeps == []   # refused: no sleep, schedule unchanged
+    assert th.wait("a.ro", 10.0, deadline=clock.t + 60.0) is True and clock.t == nxt
+
+
+# --------------------------------------------------------------------------- verifier: Imperva JS challenge
+
+IMPERVA_JS_CHALLENGE = (
+    '<html>\n<head>\n<META NAME="robots" CONTENT="noindex,nofollow">\n<script src="/_Incapsula_Resource?SWJIYLWA='
+    '5074a744e2e3d891814e9a2dace20bd4,719d34d31c8e3a6e6fffd425f7e032f3">\n</script>\n<body>\n</body></html>\n'
+)
+
+
+def test_imperva_js_challenge_is_blocked_but_normal_imperva_pages_are_not():
+    assert looks_blocked(200, IMPERVA_JS_CHALLENGE)
+    normal = ("<html><head><title>Televizoare - Magazin</title><script type='text/javascript' "
+              "src='/_Incapsula_Resource?SWJIYLWA=719d34d31c8e3a6e6fffd425f7e032f3&ns=2&cb=1158209087' async>"
+              "</script></head><body>" + "<div class='product'>Televizor LED 1.999 lei</div>" * 60 + "</body></html>")
+    assert looks_blocked(200, normal) is False
+    assert looks_blocked(200, normal.replace("<title>Televizoare - Magazin</title>", "")) is False  # big page

@@ -211,10 +211,11 @@ def _md_own(scope: Tag, names: set[str]) -> list[Tag]:
 
 
 def _md_offer_scopes(scope: Tag, depth: int = 0) -> list[Tag]:
-    """The product scope plus its itemprop=offers scopes (Offer / AggregateOffer -> Offer)."""
+    """The product scope plus its itemprop=offers scopes (Offer / AggregateOffer -> Offer) and their
+    priceSpecification scopes."""
     out = [scope]
-    if depth < 2:
-        for t in _md_own(scope, {"offers"}):
+    if depth < 3:
+        for t in _md_own(scope, {"offers"} if depth == 0 else {"offers", "pricespecification"}):
             if t.has_attr("itemscope"):
                 out.extend(_md_offer_scopes(t, depth + 1))
     return out
@@ -248,6 +249,22 @@ def _md_is_top_level(el: Tag) -> bool:
     if _md_props(el) & _MD_RELATED_PROPS:
         return False
     return not any(isinstance(p, Tag) and p.has_attr("itemscope") and _md_is(p, _MD_NESTING_TYPE) for p in el.parents)
+
+
+_MD_LIST_TYPE = re.compile(r"schema\.org/(?:ItemList|ListItem|OfferCatalog|SomeProducts)/?$", re.I)
+
+
+def _md_in_list_scope(tag: Tag) -> bool:
+    """Tag belongs to a product list, a list member or a related / similar product (not the page's product)."""
+    for p in itertools.chain([tag], tag.parents):
+        if not isinstance(p, Tag):
+            continue
+        if _md_props(p) & _MD_RELATED_PROPS:
+            return True
+        if p.has_attr("itemscope") and (_md_is(p, _MD_LIST_TYPE)
+                                        or (_md_is(p, _MD_PRODUCT_TYPE) and not _md_is_top_level(p))):
+            return True
+    return False
 
 
 def _md_products(soup: BeautifulSoup, base_url: str, store: str,
@@ -504,6 +521,7 @@ _NON_CONTENT_TAGS = frozenset({"script", "style", "option", "title", "noscript",
 _CURRENCY_WORD_RE = re.compile(r"(?<![^\W\d_])(?:lei|ron)\b", re.I)    # "lei" not glued to a letter
 _PRICE_TEXT_MAX = 80                                                    # a price element's text is short
 _SPLIT_PREFIX_RE = re.compile(r"[\d\s.,]*\d[\d\s.,]*")
+_DECIMALS_ONLY_RE = re.compile(r"\s*\d{2}\s*(?:lei|ron)\b", re.I)          # "99 Lei": decimals + currency
 
 # Old-price detection by class: class tokens are split into words on '-', '_' and camelCase boundaries, so
 # 'font-bold' / 'price-holder' / 'product-list-item' are not old prices, while 'product-old-price',
@@ -514,12 +532,18 @@ _OLD_IF_PRICE_WORDS = frozenset({"regular", "initial", "before", "was", "origina
 _PRICE_WORDS = frozenset({"price", "prices", "pret", "preturi", "amount"})
 
 
+# the same written as one lower-case word: 'oldprice', 'priceold', 'pretvechi', 'regularprice'
+_GLUED_OLD_WORD_RE = re.compile(
+    r"(?:old|was|regular|initial|before|original|full|prev|previous)(?:price|pret)s?"
+    r"|(?:price|pret)(?:old|vechi|was|initial|before|regular|original)")
+
+
 def _is_old_class_token(token: str) -> bool:
     low = token.lower()
     if "linethrough" in re.sub(r"[-_]", "", low) or re.search(r"list[-_]*price", low):
         return True
     words = {w.lower() for w in _CLASS_WORD_SPLIT.split(token) if w}
-    if any(w in _OLD_WORDS or w.startswith(("strike", "crossed")) for w in words):
+    if any(w in _OLD_WORDS or w.startswith(("strike", "crossed")) or _GLUED_OLD_WORD_RE.fullmatch(w) for w in words):
         return True
     return bool(words & _OLD_IF_PRICE_WORDS) and bool(words & _PRICE_WORDS)
 
@@ -554,18 +578,28 @@ def _price_seed(s: Any) -> bool:
 
 def _widen_split(el: Tag, root: Tag) -> Optional[tuple[Tag, Optional[float], str]]:
     """'99 Lei' whose integer part sits in a sibling element ("<span>2.599</span><span>99 Lei</span>"):
-    the ancestor whose text is only digits/separators plus this text holds the whole price."""
-    up, res = el, None
-    for _ in range(2):
+    the ancestor whose text is only digits/separators plus this text holds the whole price.
+
+    Only a bare two-digit amount is widened: "<span>1.299</span> <span>999 lei</span>" (an old price without
+    currency next to the new one) stays 999."""
+    inner = element_price_text(el)
+    if not _DECIMALS_ONLY_RE.match(inner):
+        return None
+    up = el
+    for _ in range(3):
         if up is root or not isinstance(up.parent, Tag) or up.parent.name in ("body", "html", "[document]"):
             break
-        inner = element_price_text(up)
         outer = _short_price_text(up.parent)
-        if not outer or not outer.endswith(inner) or not _SPLIT_PREFIX_RE.fullmatch(outer[:-len(inner)]):
+        if not outer or not outer.endswith(inner):
             break
-        up = up.parent
-        res = (up, parse_price(outer), outer)
-    return res
+        prefix = outer[:-len(inner)]
+        if not prefix.strip():           # a wrapper with the same text: look one level higher
+            up = up.parent
+            continue
+        if not _SPLIT_PREFIX_RE.fullmatch(prefix):
+            break
+        return up.parent, parse_price(outer), outer
+    return None
 
 
 def _price_elements(root: Tag) -> Iterator[tuple[Tag, float, str]]:
@@ -932,11 +966,44 @@ def _page_keys(soup: BeautifulSoup, url: str, requested_url: Optional[str]) -> s
     return keys
 
 
-def _pick_page_offer(cands: list[tuple[Offer, list[str], list[str]]], keys: set[str], url: str) -> tuple[Optional[Offer], bool]:
+def _title_key(text: str) -> str:
+    return " ".join(re.sub(r"[^\w]+", " ", _fold(text)).split())
+
+
+def _page_titles(soup: BeautifulSoup) -> list[str]:
+    """Names this page gives itself: its <h1> headings, og:title and <title>."""
+    out = [h.get_text(" ", strip=True) for h in soup.find_all("h1", limit=3)]
+    out.append(_meta(soup, "og:title") or "")
+    if soup.title:
+        out.append(soup.title.get_text(" ", strip=True))
+    return [k for k in (_title_key(t) for t in out) if k]
+
+
+def _named_like_page(cands: list[Offer], titles: list[str]) -> Optional[Offer]:
+    """The one candidate named like the page: equal to its h1 / og:title / <title>, else the longest name
+    contained in one of them ('Apple iPhone 15 Pro 256GB' in 'Apple iPhone 15 Pro 256GB | Shop')."""
+    keyed = [(o, _title_key(o.title)) for o in cands]
+    exact = [o for o, k in keyed if k in titles]
+    if len(exact) == 1:
+        return exact[0]
+    if exact:
+        return None
+    inside = [(o, k) for o, k in keyed if len(k) >= 8 and " " in k and any(f" {k} " in f" {t} " for t in titles)]
+    if not inside:
+        return None
+    inside.sort(key=lambda ok: len(ok[1]), reverse=True)
+    if len(inside) == 1 or len(inside[0][1]) > len(inside[1][1]):
+        return inside[0][0]
+    return None
+
+
+def _pick_page_offer(cands: list[tuple[Offer, list[str], list[str]]], keys: set[str], url: str,
+                     titles: list[str]) -> tuple[Optional[Offer], bool]:
     """Choose the page's own product among top-level candidates (offer, explicit urls, other ids).
 
-    Returns (offer, ambiguous): a URL match wins; otherwise a single candidate, or the only one that does
-    not link to another page. Several candidates that all point elsewhere look like a listing -> ambiguous."""
+    Returns (offer, ambiguous): a URL match wins; otherwise a single candidate, copies of one product, the
+    one named like the page (h1 / og:title / <title>), or the only one that does not link to another page.
+    Several different products none of which is this page's look like a listing -> (None, True)."""
     if not cands:
         return None, False
     for o, explicit, ids in cands:
@@ -944,12 +1011,15 @@ def _pick_page_offer(cands: list[tuple[Offer, list[str], list[str]]], keys: set[
             return o, False
     if len(cands) == 1:
         return cands[0][0], False
+    if len({_title_key(o.title) for o, _, _ in cands}) == 1:      # the same product described twice
+        return cands[0][0], False
+    named = _named_like_page([o for o, _, _ in cands], titles)
+    if named is not None:
+        return named, False
     unlinked = [o for o, explicit, _ in cands if not explicit]
     if len(unlinked) == 1:
         return unlinked[0], False
-    if len(cands) >= 3:
-        return None, True
-    return (unlinked or [c[0] for c in cands])[0], False
+    return None, True
 
 
 def _meta(soup: BeautifulSoup, prop: str) -> Optional[str]:
@@ -963,8 +1033,9 @@ def extract_product_page(html: str, url: str, store: str, *, requested_url: Opti
 
     Only the page's own product counts: top-level JSON-LD Product / ProductGroup and microdata Product
     scopes that are not inside a list or another product. When there are several, the one whose url / @id
-    matches this page (url, requested_url, <link rel=canonical>, og:url) wins. Related-product lists and a
-    category page we were redirected to never yield a product."""
+    matches this page (url, requested_url, <link rel=canonical>, og:url) wins, then the one named like the
+    page (h1 / og:title / <title>). Related-product lists and a category page we were redirected to never
+    yield a product (requested_url: the URL the watch asked for, before redirects)."""
     soup = make_soup(html)
     keys = _page_keys(soup, url, requested_url)
     page_urls = [url] + ([requested_url] if requested_url else [])
@@ -975,12 +1046,13 @@ def extract_product_page(html: str, url: str, store: str, *, requested_url: Opti
         if o is not None:
             offers = obj.get("offers") if isinstance(obj.get("offers"), dict) else {}
             cands.append((o, _ld_urls(obj, "url") + _ld_urls(offers, "url"), _ld_urls(obj, "@id")))
-    o, ambiguous = _pick_page_offer(cands, keys, url)
+    titles = _page_titles(soup)
+    o, ambiguous = _pick_page_offer(cands, keys, url, titles)
     if o:
         o.url = url
         return o
     md = [(o, [u] if u else [], []) for o, u in _md_products(soup, url, store, top_level_only=True)]
-    o, md_ambiguous = _pick_page_offer(md, keys, url)
+    o, md_ambiguous = _pick_page_offer(md, keys, url, titles)
     if o:
         o.url = url
         return o
@@ -997,7 +1069,8 @@ def extract_product_page(html: str, url: str, store: str, *, requested_url: Opti
     for prop, cur_prop in (("product:price:amount", "product:price:currency"),
                            ("og:price:amount", "og:price:currency"), ("twitter:data1", None)):
         cur = _meta(soup, cur_prop) if cur_prop else None
-        if (cur and cur.upper() not in ("RON", "LEI")) or (cur_prop is None and foreign):
+        # an amount whose own currency is foreign, or that has none on a page declaring only a foreign one
+        if (cur and cur.upper() not in ("RON", "LEI")) or (not cur and foreign):
             continue
         content = _meta(soup, prop)
         if content:
@@ -1005,7 +1078,10 @@ def extract_product_page(html: str, url: str, store: str, *, requested_url: Opti
             if price:
                 break
     if price is None and not foreign and not listing_like:
-        el = soup.find(attrs={"data-price-type": "finalPrice"}) or soup.find(attrs={"itemprop": "price"})
+        # Magento price box / bare itemprop=price, never one inside a product list or a related-product scope
+        el = next((t for t in itertools.chain(soup.find_all(attrs={"data-price-type": "finalPrice"}),
+                                              soup.find_all(attrs={"itemprop": "price"}))
+                   if not _md_in_list_scope(t)), None)
         if el is not None:
             price = parse_price(el.get("data-price-amount") or el.get("content") or element_price_text(el))
     if price is None:

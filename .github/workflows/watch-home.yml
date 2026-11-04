@@ -36,6 +36,9 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          BOT_AI_MODEL: ${{ vars.BOT_AI_MODEL }}
+          BOT_AI_CLASSIFY_MODEL: ${{ vars.BOT_AI_CLASSIFY_MODEL }}
           BOT_MODE: home
         run: python -m bot run --state state.json
 

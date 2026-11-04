@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+<title>Охотник за скидками</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  :root {
+    --bg: var(--tg-theme-bg-color, #ffffff);
+    --bg2: var(--tg-theme-secondary-bg-color, #f2f3f5);
+    --text: var(--tg-theme-text-color, #111111);
+    --hint: var(--tg-theme-hint-color, #8a8f98);
+    --link: var(--tg-theme-link-color, #2481cc);
+    --btn: var(--tg-theme-button-color, #2481cc);
+    --btn-text: var(--tg-theme-button-text-color, #ffffff);
+    --danger: #e5484d;
+    --ok: #30a46c;
+    --radius: 14px;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg2); color: var(--text);
+    font: 15px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  main { padding: 12px 12px 90px; max-width: 640px; margin: 0 auto; }
+  h1 { font-size: 20px; margin: 4px 4px 2px; }
+  .sub { color: var(--hint); font-size: 13px; margin: 0 4px 12px; }
+  .card { background: var(--bg); border-radius: var(--radius); padding: 12px 14px; margin-bottom: 10px; }
+  .row { display: flex; align-items: center; gap: 10px; }
+  .grow { flex: 1; min-width: 0; }
+  .name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+  .chip { background: var(--bg2); border-radius: 999px; padding: 2px 9px; font-size: 12.5px; color: var(--text); }
+  .chip.best { background: color-mix(in srgb, var(--ok) 15%, var(--bg)); color: var(--ok); font-weight: 600; }
+  .paused { opacity: .55; }
+  button { font: inherit; border: 0; border-radius: 10px; padding: 9px 12px; cursor: pointer; }
+  .btn { background: var(--btn); color: var(--btn-text); }
+  .btn2 { background: var(--bg2); color: var(--text); }
+  .btn-danger { background: transparent; color: var(--danger); padding-left: 0; }
+  .icon { background: var(--bg2); color: var(--text); padding: 7px 10px; }
+  label { display: block; font-size: 12.5px; color: var(--hint); margin: 10px 0 4px; }
+  input[type=text], input[type=number], textarea, select {
+    width: 100%; font: inherit; color: var(--text); background: var(--bg2); border: 1px solid transparent;
+    border-radius: 10px; padding: 9px 10px; outline: none; }
+  input:focus, textarea:focus, select:focus { border-color: var(--btn); }
+  textarea { min-height: 84px; resize: vertical; }
+  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .three { display: grid; grid-template-columns: 1fr 1fr 92px; gap: 8px; }
+  .stores { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 4px; }
+  .store { display: flex; align-items: center; gap: 6px; background: var(--bg2); border-radius: 9px; padding: 7px 9px; font-size: 13.5px; }
+  .store input { margin: 0; }
+  .switch { display: flex; align-items: center; justify-content: space-between; margin-top: 12px; }
+  .hint { color: var(--hint); font-size: 12.5px; margin-top: 6px; }
+  .examples span { display: inline-block; background: var(--bg2); border-radius: 8px; padding: 4px 8px; margin: 4px 4px 0 0; font-size: 12.5px; cursor: pointer; }
+  .changed { box-shadow: 0 0 0 2px var(--btn) inset; }
+  .empty { text-align: center; color: var(--hint); padding: 28px 10px; }
+  details summary { cursor: pointer; color: var(--link); font-size: 13.5px; margin-top: 10px; }
+  #fallbackSave { position: fixed; left: 12px; right: 12px; bottom: 12px; display: none; }
+</style>
+</head>
+<body>
+<main>
+  <h1>🎯 Охотник за скидками</h1>
+  <div class="sub" id="sub">Настройте, что искать — бот проверяет магазины Румынии каждые 10 минут.</div>
+
+  <div class="card">
+    <div class="row"><div class="grow"><b>➕ Новый товар</b></div></div>
+    <label for="newText">Опишите обычными словами</label>
+    <textarea id="newText" placeholder="телефон 12 гб оперативки 2025 и новее не моторола до 1000$ скидка больше 20%"></textarea>
+    <div class="examples" id="examples"></div>
+  </div>
+
+  <div id="list"></div>
+  <div class="hint" id="stamp"></div>
+</main>
+<button class="btn" id="fallbackSave">Сохранить</button>
+
+<script>
+const tg = window.Telegram && window.Telegram.WebApp;
+if (tg) { tg.ready(); tg.expand(); }
+
+function decode(s) {
+  try {
+    s = s.replace(/-/g, "+").replace(/_/g, "/");
+    while (s.length % 4) s += "=";
+    const bin = atob(s);
+    const bytes = Uint8Array.from(bin, c => c.charCodeAt(0));
+    return JSON.parse(new TextDecoder().decode(bytes));
+  } catch (e) { return null; }
+}
+const params = new URLSearchParams(location.search);
+const DATA = decode(params.get("d") || "") || { w: [], s: [], t: 0 };
+const STORES = DATA.s || [];
+const orig = JSON.parse(JSON.stringify(DATA.w || []));
+const state = JSON.parse(JSON.stringify(DATA.w || []));
+const deleted = new Set();
+
+const EXAMPLES = [
+  "телефон 12 гб оперативки 2025 и новее не моторола до 1000$ скидка больше 20%",
+  "ноутбук 16 гб озу 1 тб до 5000 лей asus или lenovo",
+  "телевизор oled 55 дюймов до 4500",
+  "пылесос дайсон скидка 30%",
+  "видеокарта rtx 5070 до 3000",
+  "кроссовки nike air max до 400",
+];
+const ex = document.getElementById("examples");
+EXAMPLES.forEach(t => { const s = document.createElement("span"); s.textContent = t; s.onclick = () => { newText.value = t; refreshButton(); }; ex.appendChild(s); });
+
+const fmt = v => v == null ? "" : Math.round(v).toLocaleString("ru-RU");
+const csv = a => (a || []).join(", ");
+const parseCsv = s => s.split(/[,;\n]/).map(x => x.trim()).filter(Boolean);
+const storeName = k => (STORES.find(s => s[0] === k) || [k, k])[1];
+const esc = s => String(s == null ? "" : s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+function chips(w) {
+  const c = [];
+  if (w.mn != null && w.mx != null) c.push(`${fmt(w.mn)}–${fmt(w.mx)} лей`);
+  else if (w.mx != null) c.push(`до ${fmt(w.mx)} лей`);
+  else if (w.mn != null) c.push(`от ${fmt(w.mn)} лей`);
+  if (w.dc) c.push(`скидка ≥${w.dc}%`);
+  if (w.r) c.push(`ОЗУ ≥${w.r} ГБ`);
+  if (w.y) c.push(`${w.y}+`);
+  if ((w.ex || []).length) c.push("без: " + csv(w.ex));
+  if (w.st && w.st.length) c.push(w.st.length + " магаз.");
+  if (w.ai) c.push("🤖 Claude");
+  return c.map(x => `<span class="chip">${esc(x)}</span>`).join("") +
+    (w.best ? `<span class="chip best">⭐ ${fmt(w.best[0])} лей · ${esc(storeName(w.best[1]))}</span>` : "");
+}
+
+function changed(i) {
+  return JSON.stringify(state[i]) !== JSON.stringify(orig[i]);
+}
+
+function render() {
+  const list = document.getElementById("list");
+  if (!state.length) { list.innerHTML = `<div class="card empty">Пока ничего не отслеживается.<br>Опишите товар выше и нажмите «Сохранить».</div>`; return; }
+  list.innerHTML = "";
+  state.forEach((w, i) => {
+    if (deleted.has(w.h)) return;
+    const el = document.createElement("div");
+    el.className = "card" + (w.en ? "" : " paused") + (changed(i) ? " changed" : "");
+    el.innerHTML = `
+      <div class="row">
+        <div class="grow"><div class="name">${w.en ? "" : "⏸ "}${esc(w.n)}</div><div class="chips">${chips(w)}</div></div>
+        <button class="icon" data-act="toggle">${w.open ? "▲" : "✏️"}</button>
+      </div>
+      ${w.open ? form(w, i) : ""}`;
+    el.querySelector('[data-act="toggle"]').onclick = () => { w.open = !w.open; render(); };
+    if (w.open) bind(el, w, i);
+    list.appendChild(el);
+  });
+  document.getElementById("stamp").textContent = DATA.t ? "Данные на " + new Date(DATA.t * 1000).toLocaleString("ru-RU") : "";
+}
+
+function form(w, i) {
+  const st = new Set(w.st || []);
+  const stores = STORES.map(([k, n, agg]) => `<label class="store"><input type="checkbox" data-store="${esc(k)}" ${st.has(k) ? "checked" : ""}>${esc(n)}${agg ? " 🔎" : ""}</label>`).join("");
+  return `
+    <label>Что искать (как в поиске магазина)</label>
+    <input type="text" data-f="q" value="${esc(w.q)}">
+    <label>Дополнительные запросы (через запятую)</label>
+    <input type="text" data-f="xq" value="${esc(csv(w.xq))}">
+    <div class="three">
+      <div><label>Цена от</label><input type="number" inputmode="decimal" data-f="mn" value="${w.mn ?? ""}"></div>
+      <div><label>Цена до</label><input type="number" inputmode="decimal" data-f="mx" value="${w.mx ?? ""}"></div>
+      <div><label>Валюта</label><select data-f="cur"><option>RON</option><option>USD</option><option>EUR</option></select></div>
+    </div>
+    <div class="three">
+      <div><label>Скидка от, %</label><input type="number" inputmode="numeric" data-f="dc" value="${w.dc ?? ""}"></div>
+      <div><label>ОЗУ от, ГБ</label><input type="number" inputmode="numeric" data-f="r" value="${w.r ?? ""}"></div>
+      <div><label>Год от</label><input type="number" inputmode="numeric" data-f="y" value="${w.y ?? ""}"></div>
+    </div>
+    <label>Исключить слова / бренды</label>
+    <input type="text" data-f="ex" value="${esc(csv(w.ex))}" placeholder="motorola, resigilat, husa">
+    <label>Обязательные слова</label>
+    <input type="text" data-f="inc" value="${esc(csv(w.inc))}" placeholder="256gb">
+    <label>Хотя бы одно из</label>
+    <input type="text" data-f="any" value="${esc(csv(w.any))}" placeholder="samsung, xiaomi, google">
+    <details ${w.st && w.st.length ? "open" : ""}><summary>Магазины: ${w.st && w.st.length ? w.st.length + " выбрано" : "все подходящие (авто)"}</summary>
+      <div class="stores">${stores}</div>
+      <div class="hint">Ничего не отмечено — бот сам выберет магазины по типу товара. 🔎 — агрегатор цен.</div>
+    </details>
+    <div class="switch"><span>Только в наличии</span><input type="checkbox" data-f="stk" ${w.stk ? "checked" : ""}></div>
+    <div class="switch"><span>Отслеживать</span><input type="checkbox" data-f="en" ${w.en ? "checked" : ""}></div>
+    <div class="row" style="margin-top:12px"><button class="btn-danger" data-act="del">🗑 Удалить</button></div>`;
+}
+
+function num(v) { if (v === "" || v == null) return null; const n = Number(String(v).replace(",", ".")); return isFinite(n) && n > 0 ? n : null; }
+
+function bind(el, w, i) {
+  el.querySelectorAll("[data-f]").forEach(inp => {
+    const f = inp.dataset.f;
+    if (f === "cur") { inp.value = w.cur || "RON"; }
+    const upd = () => {
+      if (f === "stk" || f === "en") w[f] = inp.checked;
+      else if (["mn", "mx", "dc", "r", "y"].includes(f)) w[f] = num(inp.value);
+      else if (["xq", "ex", "inc", "any"].includes(f)) w[f] = parseCsv(inp.value);
+      else if (f === "cur") w.cur = inp.value === "RON" ? undefined : inp.value;
+      else w[f] = inp.value.trim();
+      el.classList.toggle("changed", changed(i));
+      refreshButton();
+    };
+    inp.addEventListener(inp.type === "checkbox" || inp.tagName === "SELECT" ? "change" : "input", upd);
+  });
+  el.querySelectorAll("[data-store]").forEach(cb => cb.addEventListener("change", () => {
+    const set = new Set(w.st || []);
+    cb.checked ? set.add(cb.dataset.store) : set.delete(cb.dataset.store);
+    w.st = set.size ? [...set] : null;
+    el.classList.toggle("changed", changed(i));
+    refreshButton();
+  }));
+  el.querySelector('[data-act="del"]').onclick = () => {
+    const really = () => { deleted.add(w.h); render(); refreshButton(); };
+    if (tg && tg.showConfirm) tg.showConfirm(`Удалить «${w.n}»?`, ok => ok && really()); else if (confirm(`Удалить «${w.n}»?`)) really();
+  };
+}
+
+const FIELDS = ["q", "xq", "mn", "mx", "cur", "dc", "r", "y", "ex", "inc", "any", "st", "stk", "en"];
+function ops() {
+  const out = [];
+  const t = document.getElementById("newText").value.trim();
+  if (t) out.push({ op: "add", text: t });
+  state.forEach((w, i) => {
+    if (deleted.has(w.h)) { out.push({ op: "del", h: w.h }); return; }
+    const f = {};
+    FIELDS.forEach(k => { if (JSON.stringify(w[k] ?? null) !== JSON.stringify(orig[i][k] ?? null)) f[k] = w[k] ?? null; });
+    if (Object.keys(f).length) out.push({ op: "upd", h: w.h, f });
+  });
+  return out;
+}
+
+function refreshButton() {
+  const n = ops().length;
+  if (tg && tg.MainButton) {
+    if (n) { tg.MainButton.setText(n === 1 ? "Сохранить" : `Сохранить (${n})`); tg.MainButton.show(); } else tg.MainButton.hide();
+  } else {
+    document.getElementById("fallbackSave").style.display = n ? "block" : "none";
+  }
+}
+
+function save() {
+  const payload = JSON.stringify({ v: 1, ops: ops() });
+  if (tg && tg.sendData) tg.sendData(payload);
+  else alert("Откройте эту страницу из бота в Telegram.\n" + payload);
+}
+document.getElementById("newText").addEventListener("input", refreshButton);
+if (tg && tg.MainButton) tg.MainButton.onClick(save);
+document.getElementById("fallbackSave").onclick = save;
+if (!tg || !tg.initData) document.getElementById("sub").textContent = "Откройте через кнопку «⚙️ Управление» в боте.";
+render(); refreshButton();
+</script>
+</body>
+</html>

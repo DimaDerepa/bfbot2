@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from .models import Offer, Watch
-from .text import STOPWORDS, has_term, norm, query_terms, tokens
+from .text import STOPWORDS, UNITS, has_cyrillic, has_term, norm, query_terms, split_glued, tokens
 
 # Accessory / spare-part titles are skipped by default unless the word is part of the query.
 # ACCESSORY_PREFIX: always an accessory when among the first 3 significant words of the title
@@ -45,9 +45,25 @@ AUDIENCE_WORDS = {
     "voiaj", "iarna", "vara", "munte", "drumetie", "drumetii", "ciclism", "oras", "caini", "catei", "pisici",
     "animale", "toate", "orice", "zi", "noapte", "men", "women", "kids", "boys", "girls", "him", "her", "home",
     "office", "outdoor", "indoor", "running", "travel",
+    "seniori", "varstnici", "bunici", "elevi", "studenti", "incepatori", "profesionisti", "profesional",
+    # what the product works on: "Espressor pentru cafea boabe De'Longhi", "Cana filtranta pentru apa Brita"
+    "apa", "cafea", "ceai", "paine", "alimente", "rufe", "vase", "haine", "desen", "scris", "gatit", "curatenie",
+    "masaj", "dormit", "motor",
+}
+# "Filtru HEPA pentru aspirator Dyson V15": the searched words follow "pentru" at once (within 2 words); in
+# "Capsule pentru masina de spalat vase Finish Quantum" the brand comes later, so the product itself is meant
+_DEPENDENCY_WINDOW = 2
+# generic device nouns do not use up that window: "Incarcator pentru telefon Apple iPhone 16"
+DEVICE_NOUNS = {
+    "telefon", "telefoane", "telefonul", "smartphone", "smartphoneuri", "mobil", "laptop", "laptopuri", "notebook",
+    "tableta", "tablete", "consola", "console", "ceas", "ceasuri", "smartwatch", "televizor", "televizoare", "tv",
+    "monitor", "monitoare", "aspirator", "aspiratoare", "robot", "camera", "drona", "imprimanta", "router",
+    "controller", "controllere", "casti", "boxa", "pc", "calculator", "device", "dispozitiv", "dispozitive",
+    "phone", "phones", "tablet", "console", "watch",
 }
 _CATEGORY_WINDOW = 4          # "Incarcator retea Samsung 25W pentru Galaxy S24": "pentru" within 4 words of the noun
 _GLUED_RE = re.compile(r"([a-z]{3,})(\d[0-9a-z.+]*)")
+_DIGIT_SUFFIX_RE = re.compile(r"(?<=\d)([a-z]{2,})(?![a-z])")      # "5070ti" -> "5070 ti", not "16e" / "256gb"
 
 
 @dataclass
@@ -63,7 +79,14 @@ def _term_ok(t: str, term: str) -> bool:
     "OLED evo 55C46LA"). A plain number stays attached ("iphone16" needs "iPhone 16", not "iPhone 15, 16GB")."""
     if has_term(t, term):
         return True
-    m = _GLUED_RE.fullmatch(norm(term))
+    if term.lower().startswith("re:"):
+        return False
+    nt = norm(term)
+    # "rtx5070ti" / "7800xt" ~ "RTX 5070 Ti" / "RX 7800 XT": a model suffix of 2+ letters may stand apart
+    alt = _DIGIT_SUFFIX_RE.sub(lambda m: m.group(1) if m.group(1) in UNITS else " " + m.group(1), nt)
+    if alt != nt and has_term(t, alt):
+        return True
+    m = _GLUED_RE.fullmatch(nt)
     return (bool(m) and any(c.isalpha() for c in m.group(2))
             and has_term(t, m.group(1)) and has_term(t, m.group(2)))
 
@@ -96,7 +119,8 @@ def _pair_ok(t: str, term: str) -> tuple[bool, str]:
     return True, term
 
 
-def _dependency_positions(toks: list[str]) -> list[int]:
+def _dependency_positions(toks: list[str]) -> list[tuple[int, int]]:
+    """(index of "pentru"/"for"/"compatibil", index of the first word it governs), skipping audience/use words."""
     out = []
     for i, w in enumerate(toks):
         if w not in DEPENDENCY_WORDS:
@@ -106,7 +130,21 @@ def _dependency_positions(toks: list[str]) -> list[int]:
             k += 1
         if k < len(toks) and toks[k] in AUDIENCE_WORDS:
             continue
-        out.append(i)
+        out.append((i, k))
+    return out
+
+
+def _term_words(terms: list[str]) -> set[str]:
+    """Single words of the query terms, also the letter part of glued ones ("iphone16" -> "iphone")."""
+    out: set[str] = set()
+    for x in terms:
+        if x.lower().startswith("re:"):
+            continue
+        for w in norm(x).replace("-", " ").split():
+            out.add(w)
+            head = split_glued(w).split(" ")[0]
+            if len(head) >= 3:          # not the "s" of "s24"
+                out.add(head)
     return out
 
 
@@ -120,26 +158,49 @@ def _accessory(watch: Watch, t: str, toks: list[str], q: str) -> Optional[str]:
     terms = [*query_terms(watch.query or ""), *watch.must_include]
     if terms and not any(w in DEPENDENCY_WORDS for w in q.split()):
         deps = _dependency_positions(toks)
+        words = _term_words(terms)
+        regex_terms = [x for x in terms if x.lower().startswith("re:")]
 
-        def after(i: int) -> bool:
-            rest = " ".join(toks[i + 1:])
-            return any(has_term(rest, x) for x in terms)
+        def governs(k: int, n: int) -> bool:
+            """A query word is among the first n significant words from toks[k] on (device nouns not counted)."""
+            near: list[str] = []
+            for w in toks[k:]:
+                if w in words:
+                    return True
+                if w in STOPWORDS or w in DEVICE_NOUNS:
+                    continue
+                near.append(w)
+                if len(near) >= n:
+                    break
+            return any(has_term(" ".join(near), x) for x in terms)
 
-        if deps:
-            i = deps[0]
+        def lead(k: int) -> bool:
+            """The word right after "pentru" is a query word: "Incarcator Samsung pentru Galaxy S24"."""
+            return k < len(toks) and (toks[k] in words or any(has_term(toks[k], x) for x in regex_terms))
+
+        for i, k in deps:
             before = " ".join(toks[:i])
-            if not any(has_term(before, x) for x in terms) and after(i):
+            if any(has_term(before, x) for x in terms):
+                break                       # the searched product is named before "pentru": it is the item itself
+            if governs(k, _DEPENDENCY_WINDOW):
                 return f"{toks[0]} … {toks[i]} …"
         for j in sig:
             if toks[j] in ACCESSORY_CATEGORY and not has_term(q, toks[j]):
-                if any(j < i <= j + _CATEGORY_WINDOW and after(i) for i in deps):
+                # "Incarcator retea Samsung 25W pentru Galaxy S24" (not "Geanta Samsonite pentru laptop Spectrolite")
+                if any(j < i <= j + _CATEGORY_WINDOW and lead(k) for i, k in deps):
                     return toks[j]
     for term in ACCESSORY_ANYWHERE:
         if has_term(t, term) and not has_term(q, term):
             return term
     if not has_term(t, "android"):
+        tt = t.replace("-", " ")
         for term in ACCESSORY_DEVICE_PHRASES:
             if has_term(t, term) and not has_term(q, term):
+                m = re.search(rf"(?<![0-9a-z]){re.escape(term)}(?![0-9a-z])", tt)
+                before = tt[:m.start()] if m else ""
+                if (terms and all(has_term(before, x) for x in terms)
+                        and not any(has_term(before, a) and not has_term(q, a) for a in ACCESSORY_PREFIX)):
+                    continue                # "Apple Watch Series 10 GPS 46mm, compatibil cu iPhone" is the watch
                 return term
     return None
 
@@ -152,8 +213,9 @@ def title_matches(watch: Watch, title: str) -> tuple[bool, str]:
                 return False, f"нет «{term}»"
     elif watch.strict and watch.query:
         terms = _strict_terms(watch.query)
-        if not terms:
-            # e.g. an all-Russian query: norm() drops Cyrillic, and "no terms" must not mean "everything matches"
+        if not terms or (has_cyrillic(watch.query) and not any(c.isalpha() for x in terms for c in x)):
+            # e.g. an all-Russian query: norm() drops Cyrillic, and "no terms" must not mean "everything matches";
+            # "айфон 16 про" (stored before /add refused Cyrillic) would otherwise match anything with "16"
             return False, "в запросе нет латинских слов"
         for term in terms:
             ok, missing = _pair_ok(t, term)

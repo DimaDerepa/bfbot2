@@ -88,6 +88,16 @@ class CommandProcessor:
             msg = upd.get("message") or {}
             text = (msg.get("text") or "").strip()
             chat_id = str((msg.get("chat") or {}).get("id", ""))
+            wad = (msg.get("web_app_data") or {}).get("data")
+            if wad and chat_id:
+                if self.authorized(chat_id):
+                    try:
+                        self.ui.handle_webapp(chat_id, wad)
+                    except Exception:
+                        log.exception("mini app data failed")
+                        self.tg.send("⚠️ Не удалось применить изменения.", chat_id=chat_id)
+                n += 1
+                continue
             if not text or not chat_id:
                 continue
             # ignore commands older than 2 days (e.g. bot was off)
@@ -258,15 +268,17 @@ class CommandProcessor:
             return "Пример: <code>/set 2 до 4500 -max</code>"
         spec = parse_watch_spec(rest)
         spec.pop("name", None)
+        # validate the result BEFORE storing it: a rejected change (bad link, Cyrillic words) must leave the watch
+        # as it was, not half-applied in state (Telegram watch) or silently ignored later (config override)
         if w.origin == "telegram":
             for d in self.state.data["watches"]:
                 if d.get("id") == w.id:
-                    for k, v in spec.items():
-                        d[k] = v
-                    watch_from_dict({k: v for k, v in d.items() if k != "origin"}, origin="telegram")  # validate
+                    watch_from_dict({**{k: v for k, v in d.items() if k != "origin"}, **spec}, origin="telegram")
+                    d.update(spec)
         else:
-            ov = self.state.data.setdefault("overrides", {}).setdefault(w.id, {})
-            ov.update(spec)
+            spec_now = {k: v for k, v in w.to_dict().items() if k != "origin"}   # overrides already applied
+            watch_from_dict({**spec_now, **spec}, origin="config")
+            self.state.data.setdefault("overrides", {}).setdefault(w.id, {}).update(spec)
         self.force_check = True
         w2 = self._resolve(w.id)
         return f"✏️ Обновлено: {esc(w2.describe() if w2 else w.name)}"

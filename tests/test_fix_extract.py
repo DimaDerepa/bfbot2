@@ -363,3 +363,72 @@ def test_heuristic_carrefour_nested_decimals():
             "<div class=price-box><div class='price price-final'><span>6.7{i}9</span> <span> <span>99</span> <span>Lei</span> </span></div></div>"
             "<form action='/checkout/cart/add/product/{i}/'><button title='Adauga in cos'><span>Adauga in cos</span></button></form></li>")
     assert [o.price for o in heur("<ul>" + grid(card) + "</ul>").values()] == [6709.99, 6719.99, 6729.99]
+
+
+# ---------------------------------------------------------------- verifier follow-ups
+def test_old_price_without_currency_is_not_glued_to_new_price():
+    assert parse_price("1.299 999 lei") == 999.0          # thousands groups never mix '.' and ' '
+    assert parse_price("1 299 999 lei") == 1299999.0 and parse_price("1.299.999 lei") == 1299999.0
+    for old in ("<span class=old>1.{i}99</span>", "<del>1.{i}99</del>"):
+        card = "<div class=card><a href='/p/{i}'>{n}</a><div class=price>" + old + " <span class=new>999 lei</span></div></div>"
+        assert [o.price for o in heur(grid(card)).values()] == [999.0, 999.0, 999.0]
+    # the Carrefour split decimals are still joined, also through a wrapper with the same text
+    split = "<div class=card><a href='/p/{i}'>{n}</a><div class=price><span>2.{i}99</span><span><span>99 Lei</span></span></div></div>"
+    assert [o.price for o in heur(grid(split)).values()] == [2099.99, 2199.99, 2299.99]
+
+
+def test_element_price_text_separator_elements():
+    assert element_price(make_soup("<p><span>1.299</span><span>,</span><span>99</span> lei</p>").p) == 1299.99
+    assert element_price(make_soup("<p><span>1.299</span><span>.</span><span>99</span> lei</p>").p) == 1299.99
+    # a sentence ending in a number is not glued onto the price that follows
+    assert element_price(make_soup("<p>Model 2024. <span>1.299</span> lei</p>").p) == 1299.0
+    assert element_price(make_soup("<p><span>2.999,</span><span>99 lei</span></p>").p) == 2999.99
+
+
+def test_product_page_two_listing_products_are_not_the_product():
+    two = (ld('{"@type":"Product","name":"Husa silicon iPhone 15","url":"/husa","offers":{"price":"29.99","priceCurrency":"RON"}}')
+           + ld('{"@type":"Product","name":"Telefon Samsung Galaxy A15","url":"/a15","offers":{"price":"699","priceCurrency":"RON"}}'))
+    assert extract_product_page(f"<html><head><title>Telefoane</title>{two}</head></html>", "https://shop.ro/telefoane/", "shop") is None
+    cards = "".join(f'<div itemscope itemtype="http://schema.org/Product"><a href="/p/{i}"><span itemprop="name">Produs {i} foarte bun</span></a>'
+                    f'<meta itemprop="price" content="{100 + i}"><meta itemprop="priceCurrency" content="RON"></div>' for i in range(2))
+    assert extract_product_page(f"<html><body><h1>Categorie</h1>{cards}</body></html>", "https://shop.ro/categorie/", "shop") is None
+    # microdata cards inside an ItemList scope: the itemprop=price DOM fallback does not take a card's price
+    lst = ('<div itemscope itemtype="http://schema.org/ItemList">' + "".join(
+        f'<div itemprop="itemListElement" itemscope itemtype="http://schema.org/Product"><a itemprop="url" href="/p/{i}">'
+        f'<span itemprop="name">Produs {i} bun</span></a><meta itemprop="price" content="{100 + i}"></div>' for i in range(3)) + "</div>")
+    assert extract_product_page(f"<html><head><title>Categorie</title></head><body>{lst}</body></html>", "https://shop.ro/cat", "shop") is None
+
+
+def test_product_page_named_like_the_page_wins():
+    related = ('<div itemscope itemtype="http://schema.org/Product"><a href="/husa"><span itemprop="name">Husa iPhone 15 Pro</span></a>'
+               '<meta itemprop="price" content="49.99"></div>')
+    main = ('<div itemscope itemtype="http://schema.org/Product"><h1 itemprop="name">Apple iPhone 15 Pro 256GB</h1>'
+            '<meta itemprop="price" content="5499.99"><meta itemprop="priceCurrency" content="RON"></div>')
+    o = extract_product_page(f"<html><body>{related}{main}</body></html>", "https://shop.ro/iphone-15-pro", "shop")
+    assert (o.title, o.price) == ("Apple iPhone 15 Pro 256GB", 5499.99)
+    # JSON-LD: the main product's url is a stale slug, a related product links elsewhere; og:title names the product
+    lds = (ld('{"@type":"Product","name":"Husa iPhone 15","url":"/husa","offers":{"price":"49","priceCurrency":"RON"}}')
+           + ld('{"@type":"Product","name":"Apple iPhone 15 Pro 256GB","url":"/old-slug","offers":{"price":"5499.99","priceCurrency":"RON"}}'))
+    page = f'<html><head><meta property="og:title" content="Apple iPhone 15 Pro 256GB | Shop">{lds}</head></html>'
+    assert extract_product_page(page, "https://shop.ro/iphone-15-pro", "shop").price == 5499.99
+
+
+def test_product_page_meta_amount_without_currency_on_foreign_page():
+    html = ('<html><head><meta property="og:title" content="Cafetiera X"><meta property="product:price:amount" content="200">'
+            '<meta property="og:price:currency" content="EUR"></head></html>')
+    assert extract_product_page(html, "https://shop.ro/p", "shop") is None
+
+
+def test_microdata_price_in_price_specification():
+    html = ('<div itemscope itemtype="http://schema.org/Product"><span itemprop="name">Laptop Lenovo IdeaPad 3</span>'
+            '<div itemprop="offers" itemscope itemtype="http://schema.org/Offer">'
+            '<div itemprop="priceSpecification" itemscope itemtype="http://schema.org/UnitPriceSpecification">'
+            '<meta itemprop="price" content="1799"><meta itemprop="priceCurrency" content="RON"></div></div></div>')
+    (o,) = offers_from_microdata(make_soup(html), "https://shop.ro/p", "shop")
+    assert (o.title, o.price) == ("Laptop Lenovo IdeaPad 3", 1799.0)
+
+
+@pytest.mark.parametrize("token,old", [("oldprice", True), ("priceold", True), ("pretvechi", True), ("product-oldprice", True),
+                                       ("regularprice", True), ("boldprice", False), ("specialprice", False), ("pricebox", False)])
+def test_old_class_glued_words(token, old):
+    assert _is_old_class_token(token) is old

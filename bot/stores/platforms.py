@@ -17,6 +17,7 @@ from typing import Any, Optional
 from urllib.parse import urljoin
 
 from ..models import Offer
+from ..net import BlockedError, FetchError
 from ..prices import element_price, element_price_text, parse_minor_units, parse_price
 from .base import Store
 
@@ -65,7 +66,9 @@ class WooCommerceStore(Store):
         url = f"{self.base_url.rstrip('/')}/wp-json/wc/store/v1/products"
         try:
             data = self.get_json(url, params={"search": query, "per_page": str(self.page_size), "page": str(page)})
-        except Exception:
+        except Exception as e:
+            if isinstance(e, FetchError) and not isinstance(e, BlockedError) and e.status is None:
+                raise     # timeout / connection refused: the shop is down, an HTML retry would only wait again
             if page > 1:
                 return []
             html, soup, final = self.get_html(self.base_url.rstrip("/") + "/", params={"s": query, "post_type": "product"})
@@ -241,6 +244,19 @@ def _with_scheme(url: str) -> str:
     return url
 
 
+_PAGE_EXTS = (".php", ".html", ".htm", ".asp", ".aspx", ".jsp")
+
+
+def _is_relative(url: str) -> bool:
+    """'/cautare?q={q}', 'cautare?q={q}' or 'search.php?q={q}' (a path on base_url), not 'www.shop.ro/s?q={q}'."""
+    if not url or "://" in url or url.startswith("//"):
+        return False
+    if url.startswith("/"):
+        return True
+    first = url.split("/", 1)[0].split("?", 1)[0].lower()
+    return "." not in first or first.endswith(_PAGE_EXTS)
+
+
 def make_custom_store(spec: dict) -> type[Store]:
     """Build a Store subclass from a config.yaml `shops:` entry."""
     if not isinstance(spec, dict):
@@ -251,8 +267,8 @@ def make_custom_store(spec: dict) -> type[Store]:
         raise ValueError(f"shop {spec.get('key')}: неизвестная платформа {platform!r}; варианты: {sorted(PLATFORMS)}")
     base_url = _with_scheme(str(spec.get("base_url") or "")).rstrip("/")
     search_url = str(spec.get("search_url") or "").strip()
-    if search_url.startswith("/") and base_url:
-        search_url = base_url + search_url           # "/cautare?q={q}" relative to base_url
+    if base_url and _is_relative(search_url):
+        search_url = base_url + "/" + search_url.lstrip("/")    # "/cautare?q={q}" relative to base_url
     else:
         search_url = _with_scheme(search_url)
     if not base_url and search_url:

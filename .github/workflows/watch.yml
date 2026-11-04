@@ -47,11 +47,15 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          BOT_AI_MODEL: ${{ vars.BOT_AI_MODEL }}
+          BOT_AI_CLASSIFY_MODEL: ${{ vars.BOT_AI_CLASSIFY_MODEL }}
           BOT_PROXY: ${{ secrets.BOT_PROXY }}
           BOT_PROXY_STORES: ${{ vars.BOT_PROXY_STORES }}
           BOT_BROWSER: ${{ vars.BOT_BROWSER }}
           BOT_HOME_ENABLED: ${{ vars.HOME_RUNNER }}
           BOT_LISTEN_MINUTES: "8"
+          BOT_APP_URL: ${{ vars.BOT_APP_URL }}
         run: python -m bot run --state state.json
 
       - name: Save state

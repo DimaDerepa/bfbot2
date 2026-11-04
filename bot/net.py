@@ -67,6 +67,10 @@ BLOCK_MARKERS = (               # searched (lower-case) in the first 6 KB of a s
     "sec-if-cpt-container", "akamai-challenge", "/_sec/cp_challenge",   # Akamai challenge
     "are you a robot", "verify you are human",
 )
+# Imperva (Incapsula) JS challenge: a tiny page with no title whose only content is the SWJIYLWA script.
+# Normal Imperva pages load the same script among their content, so it only counts on such a near-empty page.
+_IMPERVA_JS_CHALLENGE = "_incapsula_resource?swjiylwa="
+IMPERVA_CHALLENGE_MAX = 2000
 _TITLE_PREFIXES = ("just a moment", "doar un moment")     # Cloudflare challenge title (en / ro)
 _TITLE_MARKERS = (
     "attention required! | cloudflare",                    # Cloudflare block page (error 1020 ...)
@@ -161,14 +165,19 @@ class _HostThrottle:
         self._lock = threading.Lock()
         self._next: dict[str, float] = {}
 
-    def wait(self, host: str, delay: float) -> None:
+    def wait(self, host: str, delay: float, deadline: Optional[float] = None) -> bool:
+        """Sleep until `host` may be requested again. With `deadline` (a monotonic time): when that slot
+        comes later than the deadline, return False at once, without sleeping or taking the slot."""
         with self._lock:
             now = time.monotonic()
             at = max(now, self._next.get(host, 0.0))
+            if deadline is not None and at > deadline:
+                return False
             self._next[host] = at + delay * random.uniform(0.8, 1.3)
         sleep = at - time.monotonic()
         if sleep > 0:
             time.sleep(sleep)
+        return True
 
 
 _THROTTLE = _HostThrottle()
@@ -193,6 +202,8 @@ def looks_blocked(status: int, text: str) -> bool:
         if "just a moment" in head[:2000]:
             return True
         if any(m in head[:6000] for m in BLOCK_MARKERS):
+            return True
+        if not title and len(text) < IMPERVA_CHALLENGE_MAX and _IMPERVA_JS_CHALLENGE in head:
             return True
     return False
 
@@ -335,11 +346,12 @@ class Http:
         net_failures = 0
         started: Optional[float] = None
         for attempt in range(self.retries + 1):
-            _THROTTLE.wait(host, self.delay)
-            now = time.monotonic()
             if started is None:
-                started = now     # the budget starts with the first attempt (politeness wait excluded)
-            remaining = self.max_time - (now - started)
+                _THROTTLE.wait(host, self.delay)
+                started = time.monotonic()   # the budget starts with the first attempt (politeness wait excluded)
+            elif not _THROTTLE.wait(host, self.delay, deadline=started + self.max_time - MIN_ATTEMPT_TIME):
+                break     # the host's next free slot is too late for another attempt: don't sleep in vain
+            remaining = self.max_time - (time.monotonic() - started)
             if attempt and remaining < MIN_ATTEMPT_TIME:
                 break
             try:

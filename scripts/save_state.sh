@@ -14,7 +14,7 @@ fi
 # an empty state ({}: the bot never ran) may only create the branch, never replace an existing one
 if "$PY" -c "import json,sys; sys.exit(0 if not json.load(open(sys.argv[1], encoding='utf-8')) else 1)" "$f"; then
   set +e
-  git ls-remote --exit-code --heads "$remote" state >/dev/null 2>&1
+  git ls-remote --exit-code "$remote" refs/heads/state >/dev/null 2>&1
   rc=$?
   set -e
   if [ "$rc" -ne 2 ]; then echo "state is empty and the state branch exists (or cannot be checked), not saving"; exit 0; fi
@@ -27,7 +27,7 @@ git add state.json
 git -c user.name="price-bot" -c user.email="price-bot@users.noreply.github.com" \
     commit -qm "state $(date -u +%Y-%m-%dT%H:%MZ)"
 for i in 1 2 3; do
-  if git push -qf "$remote" state:state; then
+  if git push -qf "$remote" state:refs/heads/state; then
     echo "state saved"; exit 0
   fi
   sleep $((i * 3))

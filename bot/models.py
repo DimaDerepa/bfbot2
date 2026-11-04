@@ -67,13 +67,18 @@ class Watch:
     year_min: Optional[int] = None            # parameter search: model released in year >= N (model table)
     allow_unknown_specs: bool = False         # let offers through when RAM/year cannot be determined
     pages: Optional[int] = None               # result pages per shop (parameter searches look deeper)
+    extra_queries: list[str] = field(default_factory=list)   # more search phrases for the same watch
+    intent: Optional[str] = None              # the user's original request (for the AI judge)
+    ai: bool = False                          # judge titles with Claude when ANTHROPIC_API_KEY is set
+    storage_min: Optional[int] = None
+    notes: Optional[str] = None               # other requirements for the AI judge
     origin: str = "config"                    # "config" | "telegram"
     id: str = ""
 
     def __post_init__(self) -> None:
         from .text import slug
 
-        for f in ("ram_min", "year_min", "pages"):
+        for f in ("ram_min", "year_min", "pages", "storage_min"):
             v = getattr(self, f)
             if v in ("", 0):
                 setattr(self, f, None)

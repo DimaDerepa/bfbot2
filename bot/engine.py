@@ -74,11 +74,23 @@ class StoreRun:
     cause: str = ""                    # the error that made the rest of the store's work be skipped
     seconds: float = 0.0
     requests: int = 0
+    queries: list[str] = field(default_factory=list)   # the searches this run was given (the rest are URLs)
 
     @property
     def attempted(self) -> bool:
         """Something was actually tried (a run where everything was skipped tells nothing about the store)."""
         return bool(self.results) or bool(self.products) or any(k not in self.skipped for k in self.errors)
+
+    @property
+    def searched(self) -> bool:
+        """At least one search query was actually tried (not skipped by the time budget)."""
+        return any(q not in self.skipped for q in self.queries)
+
+    @property
+    def store_failed(self) -> bool:
+        """The shop as a whole failed (blocked / not responding) and nothing came back: one store-level problem,
+        reported once by _store_health rather than once per product link."""
+        return (self.blocked or self.down) and not self.results and not any(self.products.values())
 
 
 class Engine:
@@ -97,6 +109,7 @@ class Engine:
         # hybrid mode: the home runner checks only the shops that block the cloud, the cloud skips them
         home = set(self.settings.home_stores or [])
         mode = os.environ.get("BOT_MODE", "").lower()
+        self.home_mode = mode == "home"
         if mode == "home":
             self.reg = {k: c for k, c in self.reg.items() if k in home}
         elif os.environ.get("BOT_HOME_ENABLED", "").lower() in ("1", "true", "yes"):
@@ -152,12 +165,18 @@ class Engine:
         reserved.add(w.id)
         d["id"] = w.id
         if from_config:
-            self.state.rename_watch(old, w.id)
-            notices = self.state.data.setdefault("notices", [])
-            del notices[:-9]
-            notices.append(
-                f"ℹ️ В config.yaml появился пункт с тем же именем, что и добавленный через Telegram "
-                f"«{esc(w.name)}». Слежу за обоими; у пункта из Telegram теперь id <code>{esc(w.id)}</code> (см. /list).")
+            home = getattr(self, "home_mode", False)
+            # home runner: the rename lives only in its copy until the cloud runner renames the watch in the main
+            # state, so it may meet the same collision on several runs; move the data only the first time
+            if not (home and self.state.has_watch_data(w.id)):
+                self.state.rename_watch(old, w.id)
+            if not home:   # the cloud runner tells the user (once, not twice)
+                notices = self.state.data.setdefault("notices", [])
+                del notices[:-9]
+                notices.append(
+                    f"ℹ️ В config.yaml появился пункт с тем же именем, что и добавленный через Telegram "
+                    f"«{esc(w.name)}». Слежу за обоими; у пункта из Telegram теперь id <code>{esc(w.id)}</code> "
+                    f"(см. /list).")
         else:
             self.state.forget_watch(w.id)   # duplicate Telegram entry: never inherit another watch's history
         log.warning("watch id %r is used twice (%s); Telegram watch renamed to %r",
@@ -192,10 +211,10 @@ class Engine:
 
     # ------------------------------------------------------------------ fetching
     def _make_store(self, cls: type[Store]) -> Store:
-        return cls(http_for_store(cls, self.settings), max_pages=self.settings.max_pages)
+        return cls(http_for_store(cls, self.settings), max_pages=max(1, _setting(self.settings, "max_pages", 1, int)))
 
     def _run_store(self, cls: type[Store], queries: list[str], urls: list[str]) -> StoreRun:
-        run = StoreRun(cls.key)
+        run = StoreRun(cls.key, queries=list(queries))
         t0 = time.monotonic()
         deadline = t0 + float(self.store_budget)
         if self._fetch_deadline is not None:
@@ -240,7 +259,7 @@ class Engine:
                 continue
             try:
                 # parameter searches ("telefon 12gb ram") look at several result pages
-                store.max_pages = max(1, int(self._query_pages.get(q) or self.settings.max_pages))
+                store.max_pages = max(1, int(self._query_pages.get(q) or _setting(self.settings, "max_pages", 1, int)))
                 run.results[q] = store.search(q)
             except Exception as e:
                 failed(q, e)
@@ -268,9 +287,11 @@ class Engine:
         for w in watches:
             if w.query:
                 if w.pages:
-                    self._query_pages[w.query] = max(self._query_pages.get(w.query, 0), min(int(w.pages), 5))
+                    for q in [w.query, *w.extra_queries]:
+                        self._query_pages[q] = max(self._query_pages.get(q, 0), min(int(w.pages), 5))
                 for k in self.stores_for(w):
-                    queries[k].add(w.query)
+                    for q in [w.query, *w.extra_queries]:
+                        queries[k].add(q)
                     classes[k] = self.reg[k]
             for u in w.urls:
                 try:
@@ -327,11 +348,16 @@ class Engine:
             alerts: list[Alert] = []
             first = not self.state.is_initialized(w)
             candidates: list[tuple[Offer, bool]] = []  # (offer, check_title)
+            seen_keys: set[str] = set()
             for k in store_keys:
                 r = runs.get(k)
-                if r and w.query in r.results:
-                    any_store_ok = True
-                    candidates.extend((o, True) for o in r.results[w.query])
+                for q in [w.query, *w.extra_queries]:
+                    if r and q in r.results:
+                        any_store_ok = True
+                        for o in r.results[q]:
+                            if o.key not in seen_keys:
+                                seen_keys.add(o.key)
+                                candidates.append((o, True))
             for u in w.urls:
                 for r in runs.values():
                     if u in r.products:
@@ -339,9 +365,17 @@ class Engine:
                             any_store_ok = True
                             candidates.append((r.products[u], False))
             drop_pct = w.drop_pct if w.drop_pct is not None else drop_default
+            judged = self._ai_judge(w, candidates)
             for o, check_title in candidates:
                 ref = self.state.reference_price(w, o)
-                res = evaluate(w, o, ref, check_title=check_title)
+                v = judged.get(o.title) if check_title else None
+                if v is not None:
+                    # Claude decided what the product is (type, model year, RAM); only price rules remain
+                    res = evaluate(w, o, ref, check_title=False)
+                    if not v["match"]:
+                        continue
+                else:
+                    res = evaluate(w, o, ref, check_title=check_title)
                 if not res.title_ok:
                     continue
                 if res.ok:
@@ -411,6 +445,31 @@ class Engine:
         return summary
 
     # ------------------------------------------------------------------ health messages
+    def _ai_judge(self, w: Watch, candidates: list) -> dict:
+        """Claude verdicts for titles that already pass the cheap price/stock rules (cached per watch)."""
+        if not w.ai:
+            return {}
+        from . import ai
+
+        if not ai.enabled():
+            return {}
+        titles = []
+        for o, check_title in candidates:
+            if not check_title:
+                continue
+            if w.max_price is not None and o.price > w.max_price * 1.02:
+                continue
+            if w.min_price is not None and o.price < w.min_price:
+                continue
+            if w.in_stock and o.in_stock is False:
+                continue
+            titles.append(o.title)
+        try:
+            return ai.verdicts(self.state, w, titles)
+        except Exception as e:   # never let the AI step break a run
+            log.warning("AI judge failed for %s: %s", w.id, e)
+            return {}
+
     def _store_health(self, runs: dict[str, StoreRun]) -> None:
         threshold = max(1, _setting(self.settings, "store_fail_alert_after", 6, int))
         ts = time.time()
@@ -423,6 +482,9 @@ class Engine:
             if not r.attempted:
                 continue   # everything skipped by the time budget: says nothing about the store
             failed = bool(r.errors) and not r.results and not any(r.products.values())
+            if failed and not r.searched and not r.store_failed:
+                continue   # only product links were checked and they failed for link reasons (404, no price on
+                #            the page): the shop itself may be fine, _url_health reports each link
             err = "; ".join(sorted({v for q, v in r.errors.items()
                                     if q not in r.skipped and not v.startswith("skipped (")}))[:300]
             h = self.state.store_result(k, not failed, err, sum(len(v) for v in r.results.values()))
@@ -467,6 +529,9 @@ class Engine:
                     if r is None or u in r.skipped:
                         continue       # not checked this run (time budget): no news
                     ok = r.products.get(u) is not None
+                    if not ok and r.store_failed and not r.key.startswith("web:"):
+                        continue       # the whole shop is blocked / down: one "Магазины не отвечают" message
+                        #                from _store_health, not one "check your link" message per link
                     err = r.errors.get(u, "")
                     if err.startswith("skipped (") and r.cause:
                         err = r.cause
@@ -476,8 +541,10 @@ class Engine:
                     if ts - float(h.get("alerted_at") or 0) < WARN_COOLDOWN:
                         h.update(alerted=True, warned=False)
                         continue
+                    hint = ("\nПохоже, сайт блокирует запросы из облака GitHub: поможет прокси или запуск дома "
+                            "(см. README)." if err.startswith("BLOCKED") else "")
                     msg = (f"⚠️ <b>{esc(w.name)}</b>: не удаётся прочитать цену по ссылке {esc(u)} "
-                           f"({h['cf']} проверок подряд): <code>{esc(err[:150])}</code>\n"
+                           f"({h['cf']} проверок подряд): <code>{esc(err[:150])}</code>{hint}\n"
                            f"Проверьте ссылку (заменить: <code>/set {n} новая_ссылка</code>) "
                            f"или удалите пункт: /del {n}")
                     if self._send(msg):
@@ -489,8 +556,8 @@ class Engine:
 
     def _send_notices(self) -> None:
         notices = self.state.data.get("notices")
-        if not notices:
-            return
+        if not notices or getattr(self, "home_mode", False):   # home runner: the main state's notices are
+            return                                              # the cloud runner's to send
         if self._send("\n\n".join(notices)):
             self.state.data["notices"] = []
 

@@ -18,7 +18,8 @@ valid_json() { "$PY" -c "import json,sys; d=json.load(open(sys.argv[1], encoding
 
 why=""
 for i in $(seq 1 "$tries"); do
-  git ls-remote --exit-code --heads "$remote" state >/dev/null 2>&1
+  # the full ref name: a pattern "state" would also match e.g. refs/heads/old/state, and a tag "state" would win
+  git ls-remote --exit-code "$remote" refs/heads/state >/dev/null 2>&1
   rc=$?
   if [ "$rc" -eq 2 ]; then
     echo '{}' > "$f"
@@ -26,7 +27,7 @@ for i in $(seq 1 "$tries"); do
     exit 0
   fi
   if [ "$rc" -eq 0 ]; then
-    if git fetch -q --depth=1 "$remote" state 2>/dev/null; then
+    if git fetch -q --depth=1 "$remote" refs/heads/state 2>/dev/null; then
       if git show FETCH_HEAD:state.json > "$f.tmp" 2>/dev/null; then
         if valid_json "$f.tmp"; then
           mv "$f.tmp" "$f"

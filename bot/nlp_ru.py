@@ -76,8 +76,12 @@ def _amount(num: str, mult: str = "") -> Optional[float]:
     return v
 
 
+_OPERATOR_WORDS = re.compile(r"\b(до|от|скидк\w*|лей|леев|лея|гб|тб|и|или)\b", re.I)
+
+
 def looks_natural(text: str) -> bool:
-    return has_cyrillic(text)
+    """Russian description (needs this parser) vs. compact syntax that only uses до/от/скидка as operators."""
+    return has_cyrillic(_OPERATOR_WORDS.sub(" ", text or ""))
 
 
 def parse(text: str) -> dict[str, Any]:
@@ -140,6 +144,12 @@ def parse(text: str) -> dict[str, Any]:
         if brands:
             spec.setdefault("exclude", []).extend(brands)
             take(m)
+    # --- compact-syntax tokens also work here: -word excludes, +word is required
+    for m in re.finditer(r"(?<!\S)([+\-])([a-zа-яё0-9][\w\-]*)", low):
+        if m.group(2).isdigit():
+            continue
+        spec.setdefault("exclude" if m.group(1) == "-" else "must_include", []).append(m.group(2))
+        take(m)
     # --- category
     category = None
     for pat, q, title_rx, cat in CATEGORIES:

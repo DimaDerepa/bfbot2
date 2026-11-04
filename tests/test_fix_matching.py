@@ -331,3 +331,99 @@ def test_glued_split_keeps_number_rules():
     assert tm("televizor oled 55", 'Televizor Samsung 55" OLED')
     assert infer_categories("rtx5070") == {"pc"}
     assert "electronics" in infer_categories("iphone16 pro")
+
+
+# ------------------------------------------------------------------ verifier follow-ups
+def test_max_equals_with_space_thousands_and_currency():
+    assert parse_watch_spec("iphone max=4 800") == {"query": "iphone", "max_price": 4800.0}
+    assert parse_watch_spec("iphone max= 4800") == {"query": "iphone", "max_price": 4800.0}
+    assert parse_watch_spec("iphone max=5k lei") == {"query": "iphone", "max_price": 5000.0}
+    assert parse_watch_spec("max=") == {"max_price": None}                 # /set N max= still clears the limit
+
+
+def test_digit_group_join_does_not_eat_a_storage_size():
+    assert parse_watch_spec("ssd до 500 512") == {"query": "ssd 512", "max_price": 500.0}
+    assert parse_watch_spec("rtx max=500 128") == {"query": "rtx 128", "max_price": 500.0}
+    assert parse_watch_spec("tv до 120 000") == {"query": "tv", "max_price": 120000.0}
+    assert parse_watch_spec("iphone до 12 500") == {"query": "iphone", "max_price": 12500.0}
+
+
+def test_bare_number_with_cyrillic_currency_asks_for_the_price_syntax():
+    with pytest.raises(ValueError, match="до 4800"):
+        parse_watch_spec("iphone 16 pro 4800 лей")
+
+
+def test_store_list_continuation_stops_at_criteria():
+    assert parse_watch_spec("rtx 5070 @emag, до 3000") == {"query": "rtx 5070", "stores": ["emag"], "max_price": 3000.0}
+    assert parse_watch_spec("rtx 5070 @emag, <3000") == {"query": "rtx 5070", "stores": ["emag"], "max_price": 3000.0}
+
+
+@pytest.mark.parametrize("text", ["aspirator dyson скидка20", "aspirator dyson скидка:20%", "aspirator dyson скидку 20"])
+def test_glued_discount(text):
+    assert parse_watch_spec(text) == {"query": "aspirator dyson", "min_discount": 20.0}
+
+
+def test_link_without_https_is_a_link_not_query_words():
+    s = parse_watch_spec("www.emag.ro/telefon/pd/D1/ <2000")
+    assert s == {"urls": ["https://www.emag.ro/telefon/pd/D1/"], "max_price": 2000.0}
+    assert parse_watch_spec("altex.ro/telefon/cpd/X1/")["urls"] == ["https://altex.ro/telefon/cpd/X1/"]
+    assert watch_from_dict(s, origin="telegram").urls == ["https://www.emag.ro/telefon/pd/D1/"]
+
+
+def test_legacy_slug_is_the_id_older_versions_gave():
+    from bot.text import legacy_slug
+    assert legacy_slug("Видеокарта RTX 5070") == "rtx-5070" != slug("Видеокарта RTX 5070")
+    assert legacy_slug("Конкретный товар") == "watch"
+    assert legacy_slug("iPhone 16 Pro 256GB") == slug("iPhone 16 Pro 256GB")
+    assert legacy_slug("RTX™ 5070") == "rtxtm-5070"
+
+
+def test_stored_mixed_cyrillic_query_with_only_numbers_left_matches_nothing():
+    w = watch_from_dict({"name": "x", "id": "x", "query": "айфон 16 про"}, origin="telegram", validate=False)
+    ok, why = title_matches(w, "Telefon mobil Apple iPhone 15, 16GB")
+    assert not ok and "латинских" in why
+    assert tm("42115", "LEGO Technic 42115 Lamborghini")                  # a Latin all-number query still works
+
+
+@pytest.mark.parametrize("query,title", [
+    ("rtx5070ti", "Placa video Gigabyte GeForce RTX 5070 Ti 16GB"),
+    ("rtx 5070ti", "Placa video Gigabyte GeForce RTX 5070 Ti 16GB"),
+    ("rx7800xt", "Placa video Sapphire Radeon RX 7800 XT 16GB"),
+    ("iphone16pro", "Apple iPhone 16 Pro 256GB"),
+    ("s24ultra", "Samsung Galaxy S24 Ultra 512GB"),
+])
+def test_glued_model_suffix_matches_spaced_title(query, title):
+    assert title_matches(W(query=query), title) == (True, "")
+
+
+def test_glued_model_suffix_keeps_number_rules():
+    assert not tm("iphone16", "Apple iPhone 16e 128GB")
+    assert not tm("rtx5070ti", "Placa video RTX 5070 Tiger")
+    assert not tm("rtx 5070ti", "Placa video RTX 5070 16GB")
+
+
+@pytest.mark.parametrize("query,title", [
+    ("finish quantum", "Detergent capsule pentru masina de spalat vase Finish Quantum All in One, 60 spalari"),
+    ("ariel", "Detergent lichid pentru rufe Ariel Color, 2.2L"),
+    ("brita marella", "Cana filtranta pentru apa Brita Marella 2.4L"),
+    ("nokia 105", "Telefon pentru seniori Nokia 105, Dual SIM"),
+    ("samsonite spectrolite", "Geanta Samsonite pentru laptop 15.6 Spectrolite 3.0"),
+    ("apple watch series 10", "Apple Watch Series 10 GPS 46mm, compatibil cu iPhone"),
+    ("garmin forerunner 265", "Ceas Garmin Forerunner 265, compatibil cu iPhone"),
+    ("magsafe", "Incarcator wireless Apple MagSafe pentru iPhone, 25W"),
+])
+def test_products_whose_brand_follows_pentru_later_are_kept(query, title):
+    assert title_matches(W(query=query), title) == (True, "")
+
+
+@pytest.mark.parametrize("query,title", [
+    ("iphone 16", "Incarcator pentru telefon Apple iPhone 16, 20W"),
+    ("lenovo legion 5", "Incarcator pentru laptop Lenovo Legion 5, 230W"),
+    ("dyson v8", "Perie motorizata pentru aspirator Dyson V8"),
+    ("playstation 5", "Statie de incarcare pentru controllere PlayStation 5 DualSense"),
+    ("iphone 16 pro", "Apple iPhone 16 Pro Folie sticla compatibil cu iPhone 16 Pro"),
+    ("galaxy watch 7", "Curea silicon pentru Samsung Galaxy Watch 7"),
+])
+def test_accessories_naming_the_device_after_pentru_are_still_skipped(query, title):
+    ok, why = title_matches(W(query=query), title)
+    assert not ok and why.startswith("аксессуар")

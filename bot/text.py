@@ -114,14 +114,24 @@ def _drops_letters(text: str) -> bool:
     return any(c.isalnum() and not c.isascii() and not unicodedata.combining(c) for c in s)
 
 
+def _slug_base(text: str) -> str:
+    # ids made before norm() mapped "™" to a space and read "″" as inch keep their old form ("rtx™ 5070" -> "rtxtm-5070")
+    legacy = text.replace("™", "TM").replace("℠", "SM").replace("″", " ")
+    return re.sub(r"[^0-9a-z]+", "-", norm(legacy)).strip("-")
+
+
+def legacy_slug(text: str) -> str:
+    """The id older versions gave this name (no hash suffix: 'Видеокарта RTX 5070' -> 'rtx-5070', 'Подарок' -> 'watch').
+    State written by them is keyed by it, so a config watch whose slug() changed can take its history over."""
+    return _slug_base("" if text is None else str(text))[:60] or "watch"
+
+
 def slug(text: str) -> str:
     """Watch id from its name. Names that slug cleanly keep exactly the id they always had (state is keyed by it).
     When letters were dropped ('Телевизор LG') or nothing is left ('Подарок маме'), a short stable hash of the
     original name is appended, so 'Телевизор LG' and 'Монитор LG' no longer share the id 'lg'."""
     text = "" if text is None else str(text)
-    # ids made before norm() mapped "™" to a space and read "″" as inch keep their old form ("rtx™ 5070" -> "rtxtm-5070")
-    legacy = text.replace("™", "TM").replace("℠", "SM").replace("″", " ")
-    s = re.sub(r"[^0-9a-z]+", "-", norm(legacy)).strip("-")
+    s = _slug_base(text)
     if s and not _drops_letters(text):
         return s[:60]
     key = " ".join(unicodedata.normalize("NFC", text).casefold().split())

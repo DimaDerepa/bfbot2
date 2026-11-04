@@ -83,3 +83,85 @@ def test_natural_language_parameter_search():
     assert not ok("Husa telefon Samsung Galaxy S25 12GB", 50, 90)        # accessory
     nl = __import__("bot.nlp_ru", fromlist=["parse"]).parse("ноутбук 16гб озу 1 тб до 5000 лей asus или lenovo")
     assert nl["ram_min"] == 16 and nl["any_of"] == ["asus", "lenovo"] and "1tb" in nl["must_include"]
+
+
+def test_ai_watch_uses_claude_verdicts(monkeypatch):
+    from bot import ai
+    from bot.models import Offer
+    from bot.stores.base import Store
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
+    calls = []
+
+    def fake_json_call(model, system, user, schema, max_tokens, effort):
+        calls.append(user)
+        if "Titles:" not in user:   # request parsing
+            return {"search_queries": ["telefon 12gb ram", "smartphone 12gb"], "product_type": "telefon", "category": "electronics",
+                    "max_price": 1000, "min_price": None, "currency": "USD", "min_discount_pct": 20, "ram_min_gb": 12,
+                    "storage_min_gb": None, "year_min": 2025, "brands_include": [], "brands_exclude": ["motorola"],
+                    "exclude_words": [], "other_requirements": "", "summary_ru": "Телефон 12 ГБ, 2025+"}
+        titles = [l.split(". ", 1)[1] for l in user.split("Titles:\n", 1)[1].splitlines()]
+        return {"items": [{"i": i, "match": "Galaxy S25" in t, "year": 2025, "ram_gb": 12, "why": ""} for i, t in enumerate(titles)]}
+
+    monkeypatch.setattr(ai, "_json_call", fake_json_call)
+
+    class Shop(Store):
+        key, name, base_url, categories = "shop", "Shop", "https://shop.ro", ("general",)
+
+        def search_page(self, q, page):
+            return [Offer(store="shop", title="Telefon mobil Samsung Galaxy S25, 12GB RAM, 256GB", url="https://shop.ro/1", price=3000, old_price=4000, offer_id="1"),
+                    Offer(store="shop", title="Telefon Unknown Phone X 12GB", url="https://shop.ro/2", price=900, old_price=2000, offer_id="2")] if page == 1 else []
+
+    tg = TG()
+    e = Engine(Config(Settings(), []), State.load(""), tg)
+    e.reg, e.store_names = {"shop": Shop}, {"shop": "Shop"}
+    cp = CommandProcessor(e)
+    tg.updates = [msg(1, "/start"), msg(2, "телефон 12 гб оперативки 2025+ не моторола до 1000$ скидка больше 20%")]
+    cp.poll()
+    w = e.all_watches()[0]
+    assert w.ai and w.query == "telefon 12gb ram" and w.extra_queries == ["smartphone 12gb"] and w.exclude == ["motorola"]
+    e.run_cycle()
+    digest = [t for t in texts(tg) if "найдено" in t][-1]
+    assert "Galaxy S25" in digest and "Unknown Phone" not in digest
+    n = len(calls)
+    e.run_cycle()
+    assert len(calls) == n       # verdicts cached: no new API calls for the same titles
+
+
+def test_mini_app_roundtrip(monkeypatch):
+    import base64
+    import json
+
+    from bot import fx
+
+    fx._cache["t"] = 9e18
+    monkeypatch.setenv("GITHUB_REPOSITORY", "DimaDerepa/bfbot2")
+    tg = TG()
+    e = Engine(Config(Settings(), []), State.load(""), tg)
+    cp = CommandProcessor(e)
+    tg.updates = [msg(1, "/start")]
+    cp.poll()
+    kb = [p.get("markup") for m, p in tg.calls if m == "send" and p.get("markup")]
+    # TG.send stores markup? it records text/chat only -> inspect via ui directly
+    url = cp.ui.main_kb()["keyboard"][0][0]["web_app"]["url"]
+    assert url.startswith("https://dimaderepa.github.io/bfbot2/app/?d=")
+    data = {"v": 1, "ops": [{"op": "add", "text": "rtx 5070 до 3200"}]}
+    tg.updates = [{"update_id": 2, "message": {"chat": {"id": 5}, "web_app_data": {"data": json.dumps(data)}}}]
+    cp.poll()
+    w = e.all_watches()[0]
+    assert w.query == "rtx 5070" and w.max_price == 3200
+    h = _h(w.id)
+    upd = {"v": 1, "ops": [{"op": "upd", "h": h, "f": {"mx": 700, "cur": "USD", "ex": ["ti"], "st": ["altex", "emag"], "y": 2025, "en": False}}]}
+    tg.updates = [{"update_id": 3, "message": {"chat": {"id": 5}, "web_app_data": {"data": json.dumps(upd)}}}]
+    cp.poll()
+    w = e.all_watches()[0]
+    assert w.max_price == round(700 * 4.45) and w.exclude == ["ti"] and w.stores == ["altex", "emag"] and w.year_min == 2025
+    assert w.enabled is False
+    payload = cp.ui.main_kb()["keyboard"][0][0]["web_app"]["url"].split("d=", 1)[1]
+    pad = "=" * (-len(payload) % 4)
+    snap = json.loads(base64.urlsafe_b64decode(payload + pad))
+    assert snap["w"][0]["h"] == h and snap["w"][0]["mx"] == w.max_price and any(s[0] == "emag" for s in snap["s"])
+    tg.updates = [{"update_id": 4, "message": {"chat": {"id": 5}, "web_app_data": {"data": json.dumps({"ops": [{"op": "del", "h": h}]})}}}]
+    cp.poll()
+    assert e.all_watches() == []
+    assert any("Сохранено" in t for t in texts(tg))

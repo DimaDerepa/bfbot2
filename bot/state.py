@@ -225,7 +225,11 @@ class State:
         urls = [k for k in uf if k.startswith(prefix)]
         return offers, urls
 
-    def forget_watch(self, watch_id: str) -> None:
+    def has_watch_data(self, watch_id: str) -> bool:
+        offers, urls = self._watch_keys(watch_id)
+        return bool(offers or urls) or watch_id in self.data["initialized"]
+
+    def forget_watch(self, watch_id: str, *, log_event: bool = True) -> None:
         """Drop everything stored under a watch id (offers, first-run flag, URL failures).
 
         Used when an id is (re)assigned to a NEW watch, so it does not inherit a deleted watch's history."""
@@ -235,12 +239,14 @@ class State:
         for k in urls:
             del self.data["url_fail"][k]
         self.data["initialized"] = [i for i in self.data["initialized"] if i != watch_id]
+        if log_event:
+            self._log_watch_event("forget", watch_id)
 
-    def rename_watch(self, old_id: str, new_id: str) -> None:
+    def rename_watch(self, old_id: str, new_id: str, *, log_event: bool = True) -> None:
         """Move all state of watch `old_id` to `new_id` (id collision between config.yaml and Telegram)."""
         if old_id == new_id:
             return
-        self.forget_watch(new_id)
+        self.forget_watch(new_id, log_event=False)
         offers, urls = self._watch_keys(old_id)
         for k in offers:
             self.offers[new_id + k[len(old_id):]] = self.offers.pop(k)
@@ -250,6 +256,49 @@ class State:
         init = self.data["initialized"]
         if old_id in init:
             self.data["initialized"] = [i for i in init if i != old_id] + [new_id]
+        if log_event:
+            self._log_watch_event("rename", old_id, new_id)
+
+    # The home runner (BOT_MODE=home) keeps its own offers / first-run flags in state-home.json. A watch that is
+    # deleted and re-added under the same id, or renamed after an id collision, must be reset / moved there too,
+    # or the home shops would skip the new watch's digest and hide offers they already knew. The main state keeps
+    # a short log of those changes; the home runner replays what it has not seen yet (replay_watch_events).
+    EVENTS_KEPT = 200
+
+    def _log_watch_event(self, op: str, watch_id: str, new_id: Optional[str] = None) -> None:
+        try:
+            seq = int(self.data.get("watch_seq") or 0) + 1
+        except (TypeError, ValueError):
+            seq = 1
+        self.data["watch_seq"] = seq
+        ev = self.data.get("watch_events")
+        if not isinstance(ev, list):
+            ev = self.data["watch_events"] = []
+        ev.append({"n": seq, "op": op, "id": watch_id, **({"to": new_id} if new_id else {}), "ts": now()})
+        del ev[:-self.EVENTS_KEPT]
+
+    def replay_watch_events(self, events: Any, seq: Any, applied: Any) -> int:
+        """Apply the main state's forget/rename events newer than `applied` to this (home) state.
+        Returns the new high-water mark to store as events_applied."""
+        try:
+            seq, applied = int(seq or 0), int(applied or 0)
+        except (TypeError, ValueError):
+            return 0
+        if applied > seq:        # the main state was reset (new branch): its numbering started again
+            applied = 0
+        for ev in events if isinstance(events, list) else []:
+            try:
+                n, op, wid = int(ev["n"]), ev["op"], str(ev["id"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if n <= applied:
+                continue
+            if op == "forget":
+                self.forget_watch(wid, log_event=False)
+            elif op == "rename" and ev.get("to") and not self.has_watch_data(str(ev["to"])):
+                # (if the home runner met the collision first, it already moved the data itself)
+                self.rename_watch(wid, str(ev["to"]), log_event=False)
+        return seq
 
     def url_result(self, watch_id: str, url: str, ok: bool, error: str = "") -> dict:
         """Consecutive-failure bookkeeping for one URL of a URL watch."""

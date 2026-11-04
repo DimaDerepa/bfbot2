@@ -23,11 +23,27 @@ BTN_LIST = "📋 Мои товары"
 BTN_STORES = "🏪 Магазины"
 BTN_HELP = "ℹ️ Помощь"
 
+BTN_APP = "⚙️ Управление"
+
 MAIN_KB = {
     "keyboard": [[{"text": BTN_ADD}, {"text": BTN_LIST}], [{"text": BTN_STORES}, {"text": BTN_HELP}]],
     "resize_keyboard": True,
     "is_persistent": True,
 }
+
+
+def app_url() -> Optional[str]:
+    """Mini App page (GitHub Pages of this repo, docs/app/) — BOT_APP_URL overrides."""
+    import os
+
+    url = os.environ.get("BOT_APP_URL")
+    if url:
+        return url
+    repo = os.environ.get("GITHUB_REPOSITORY", "")
+    if "/" in repo:
+        owner, name = repo.split("/", 1)
+        return f"https://{owner.lower()}.github.io/{name}/app/"
+    return None
 
 FIELDS = {
     "max_price": ("💰 Макс. цена", "Введите <b>максимальную цену</b> в леях, например <code>4800</code>.\n<code>0</code> — убрать ограничение."),
@@ -107,6 +123,100 @@ class TelegramUI:
         if not res.get("ok") and "not modified" not in str(res.get("description", "")):
             self.send(chat_id, text, markup)
 
+    def main_kb(self) -> dict:
+        url = app_url()
+        if not url:
+            return MAIN_KB
+        sep = "&" if "?" in url else "?"
+        return {**MAIN_KB, "keyboard": [[{"text": BTN_APP, "web_app": {"url": f"{url}{sep}d={self.webapp_payload()}"}}],
+                                        *MAIN_KB["keyboard"]]}
+
+    def webapp_payload(self) -> str:
+        import base64
+        import json
+        import time as _t
+
+        from .stores import registry
+
+        ws = []
+        for w in self.engine.all_watches():
+            best = self.state.best_offers(w, 1)
+            ws.append({"h": _h(w.id), "n": w.name[:60], "q": w.query or "", "xq": w.extra_queries,
+                       "mn": w.min_price, "mx": w.max_price, "dc": w.min_discount, "r": w.ram_min, "y": w.year_min,
+                       "ex": w.exclude, "inc": [x for x in w.must_include if not x.startswith("re:")], "any": w.any_of,
+                       "st": w.stores, "stk": w.in_stock, "en": w.enabled, "ai": w.ai,
+                       "best": [best[0]["p"], best[0]["s"]] if best else None})
+        reg = registry(getattr(self.engine.settings, "shops", ()))
+        stores = [[k, c.name, 1 if c.aggregator else 0]
+                  for k, c in sorted(reg.items(), key=lambda kv: (not kv[1].aggregator, kv[1].name.lower()))]
+        raw = json.dumps({"v": 1, "t": int(_t.time()), "w": ws, "s": stores}, ensure_ascii=False, separators=(",", ":"))
+        return base64.urlsafe_b64encode(raw.encode()).decode().rstrip("=")
+
+    def handle_webapp(self, chat_id: str, raw: str) -> None:
+        """Changes sent by the Mini App (Telegram.WebApp.sendData)."""
+        import json
+
+        from .fx import to_ron
+
+        try:
+            data = json.loads(raw)
+        except ValueError:
+            self.send(chat_id, "⚠️ Не удалось прочитать данные из приложения.", self.main_kb())
+            return
+        done: list[str] = []
+        for op in (data.get("ops") or [])[:40]:
+            try:
+                kind = op.get("op")
+                if kind == "add" and str(op.get("text") or "").strip():
+                    w = self._create(str(op["text"]))
+                    done.append(f"➕ {esc(w.name)} — {esc(w.describe())}")
+                    continue
+                w = self._find(str(op.get("h") or ""))
+                if w is None:
+                    continue
+                if kind == "del":
+                    self.cp.cmd_del(w.id)
+                    done.append(f"🗑 {esc(w.name)}")
+                elif kind == "upd":
+                    f = op.get("f") or {}
+                    cur = f.get("cur") or None
+                    ch: dict[str, Any] = {}
+                    if "q" in f and str(f["q"] or "").strip():
+                        ch["query"] = str(f["q"]).strip()
+                    if "xq" in f:
+                        ch["extra_queries"] = [str(x) for x in f["xq"] or []]
+                    for k, dst in (("mn", "min_price"), ("mx", "max_price")):
+                        if k in f or ("cur" in f and getattr(w, dst) is not None):
+                            v = f.get(k, getattr(w, dst))
+                            ch[dst] = to_ron(float(v), cur) if v else None
+                    if "dc" in f:
+                        ch["min_discount"] = float(f["dc"]) if f["dc"] else None
+                    for k, dst in (("r", "ram_min"), ("y", "year_min")):
+                        if k in f:
+                            ch[dst] = int(f[k]) if f[k] else None
+                            if f[k]:
+                                ch["pages"] = max(3, w.pages or 0)
+                    if "ex" in f:
+                        ch["exclude"] = [str(x) for x in f["ex"] or []]
+                    if "inc" in f:
+                        ch["must_include"] = [x for x in w.must_include if x.startswith("re:")] + [str(x) for x in f["inc"] or []]
+                    if "any" in f:
+                        ch["any_of"] = [str(x) for x in f["any"] or []]
+                    if "st" in f:
+                        ch["stores"] = [str(x) for x in f["st"]] if f["st"] else None
+                    if "stk" in f:
+                        ch["in_stock"] = bool(f["stk"])
+                    if ch:
+                        w = self._update(w, ch)
+                    if "en" in f and bool(f["en"]) != w.enabled:
+                        self.cp._set_enabled(w, bool(f["en"]))
+                    done.append(f"✏️ {esc(w.name)} — {esc(w.describe())}")
+            except (ValueError, TypeError) as e:
+                done.append(f"⚠️ {esc(str(e))}")
+        self.cp.force_check = True
+        text = ("💾 Сохранено:\n" + "\n".join(done) + "\n\n" + self.cp._when()) if done else "Изменений нет."
+        self.send(chat_id, text, self.main_kb())
+
     def _pending(self) -> dict:
         return self.state.data["telegram"].setdefault("pending", {})
 
@@ -135,7 +245,22 @@ class TelegramUI:
     def _create(self, text: str) -> Watch:
         from . import nlp_ru
 
-        spec = nlp_ru.parse(text) if nlp_ru.looks_natural(text) else parse_watch_spec(text)
+        spec = None
+        if not text.strip().lower().startswith(("http://", "https://")):
+            from . import ai
+
+            if ai.enabled() and (nlp_ru.looks_natural(text) or len(text.split()) > 3):
+                data = ai.parse_request(text)
+                if data:
+                    spec = ai.spec_from_ai(data, text)
+                    try:   # rule-based terms as a safety net if the AI judge is unavailable later
+                        rules = nlp_ru.parse(text) if nlp_ru.looks_natural(text) else {}
+                        if rules.get("must_include"):
+                            spec["must_include"] = rules["must_include"]
+                    except ValueError:
+                        pass
+        if spec is None:
+            spec = nlp_ru.parse(text) if nlp_ru.looks_natural(text) else parse_watch_spec(text)
         if not spec.get("query") and not spec.get("urls"):
             raise ValueError("Не понял, что искать. Напишите, например: <code>iphone 16 pro 256gb</code>")
         spec.setdefault("name", spec.get("query") or spec["urls"][0])
@@ -185,7 +310,14 @@ class TelegramUI:
         stores = ", ".join(self.engine.store_names.get(s, s) for s in w.stores) if w.stores else "все подходящие" + cats
         lines.append(f"🏪 Магазины: {esc(stores)}")
         lines.append(f"📦 Наличие: {'только в наличии' if w.in_stock else 'все, даже нет в наличии'}")
-        if w.ram_min or w.year_min:
+        if w.ai:
+            from . import ai as _ai
+
+            lines.append("🤖 Товары проверяет Claude (тип, год, ОЗУ, требования)." if _ai.enabled()
+                         else "🤖 Claude не подключён (нет ANTHROPIC_API_KEY): работают обычные правила.")
+            if w.extra_queries:
+                lines.append("🔎 Ещё запросы: " + esc(", ".join(w.extra_queries)))
+        elif w.ram_min or w.year_min:
             lines.append("<i>ОЗУ и год определяются по названию и модели; если их не понять, товар не показывается.</i>")
         best = self.state.best_offers(w, 1)
         if best:
@@ -240,7 +372,7 @@ class TelegramUI:
         self.send(chat_id, (intro + "\n\n" if intro else "") +
                   "Я слежу за ценами в магазинах Румынии и пишу, когда товар подходит под ваши условия.\n\n"
                   "Нажмите <b>➕ Добавить товар</b>, напишите, что искать, а дальше настройте цену, скидку и магазины кнопками.",
-                  MAIN_KB)
+                  self.main_kb())
 
     def handle_text(self, chat_id: str, text: str) -> bool:
         """Menu buttons and answers to a pending question. Returns True if the message was consumed."""
@@ -251,10 +383,10 @@ class TelegramUI:
             self.send(chat_id, t, kb)
             return True
         if text == BTN_STORES:
-            self.send(chat_id, self.cp.cmd_stores(""), MAIN_KB)
+            self.send(chat_id, self.cp.cmd_stores(""), self.main_kb())
             return True
         if text == BTN_HELP:
-            self.send(chat_id, self.cp.handle(chat_id, "/help") or "", MAIN_KB)
+            self.send(chat_id, self.cp.handle(chat_id, "/help") or "", self.main_kb())
             return True
         pend = self._pending().get(chat_id)
         if not pend or text.startswith("/"):
@@ -268,7 +400,7 @@ class TelegramUI:
                 return True
             w = self._find(pend["h"])
             if not w:
-                self.send(chat_id, "Этот товар уже удалён.", MAIN_KB)
+                self.send(chat_id, "Этот товар уже удалён.", self.main_kb())
                 return True
             field = pend["field"]
             if field in ("max_price", "min_price", "min_discount", "ram_min", "year_min"):

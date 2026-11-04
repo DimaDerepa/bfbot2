@@ -48,7 +48,7 @@ def _print_summary(summary: dict) -> None:
         print(f"  [{status}] {k:<14} offers={s['offers']:<4} req={s['requests']:<3} {s['sec']:>5}s{err}")
 
 
-HOME_KEYS = ("offers", "initialized", "stores", "runs", "last_run", "last_summary", "url_fail")
+HOME_KEYS = ("offers", "initialized", "stores", "runs", "last_run", "last_summary", "url_fail", "events_applied")
 
 
 def _home_state_path(main_path: str) -> str:
@@ -69,6 +69,10 @@ def cmd_run(args) -> int:
             else:
                 state.data.pop(k, None)
         state._defaults()
+        # watches deleted + re-added (or renamed) through Telegram since the last home run: reset / move their
+        # home offers too, so the home shops send the new watch's digest (the cloud runner already did)
+        state.data["events_applied"] = state.replay_watch_events(
+            state.data.get("watch_events"), state.data.get("watch_seq"), state.data.get("events_applied"))
         state.path = home_path
     elif os.path.exists(home_path):
         try:
@@ -137,6 +141,7 @@ def cmd_daemon(args, *, sleep=None, max_loops: int | None = None) -> int:
     next_run = 0.0
     tg_fails = 0       # failed getUpdates in a row (bad token, Telegram 5xx, 409 from a second instance)
     cycle_fails = 0    # crashed cycles in a row
+    loop_fails = 0     # crashes outside the cycle in a row (Engine / CommandProcessor could not be built)
     loops = 0
     log.info("daemon started, interval %ds", interval)
     try:
@@ -179,14 +184,20 @@ def cmd_daemon(args, *, sleep=None, max_loops: int | None = None) -> int:
                                   next_run - time.time())
                     state.save_if_changed()
             except Exception:
+                # e.g. the Engine cannot even be built (broken shop entry): no cycle ran, next_run did not move,
+                # so without this back-off the loop would spin every second
                 traceback.print_exc()
+                loop_fails += 1
                 state.save_if_changed()
-                pause = max(pause, 30.0)
+                pause = max(pause, min(300.0, 30.0 * 2 ** (loop_fails - 1)))
+            else:
+                loop_fails = 0
             if not tg.enabled:
                 pause = max(pause, min(30.0, next_run - time.time()), 1.0)
             if pause > 0:
-                # do not oversleep the next cycle
-                sleep(max(1.0, min(pause, next_run - time.time())) if next_run > time.time() else 1.0)
+                left = next_run - time.time()
+                # do not oversleep the next cycle (unless the loop itself crashed: then wait the full pause)
+                sleep(pause if loop_fails else (max(1.0, min(pause, left)) if left > 0 else 1.0))
     except KeyboardInterrupt:
         pass
     state.save()

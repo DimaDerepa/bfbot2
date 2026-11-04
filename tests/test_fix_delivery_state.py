@@ -751,3 +751,238 @@ def test_engine_tolerates_non_numeric_settings():
     e = engine_with([watch_from_dict(PS5)], tg=tg, first_run_digest="eight", notify_drop_pct="x")
     e.run_cycle()
     assert len(tg.messages) == 1
+
+
+# ====================================================================== verifier: follow-ups
+def test_stored_watch_with_link_rejected_by_new_checks_keeps_loading_and_is_reported():
+    """/add now rejects a broken link (config.check_urls); a watch stored by an older version must still load
+    (visible in /list, deletable) and its link is reported, instead of crashing every run or vanishing."""
+    FakeStore.offers = [mk("Consola Sony PlayStation 5 Slim", 1999, pid="a")]
+    st = State.load("")
+    st.data["watches"] = [{"name": "old link", "urls": ["https://[www.emag.ro/telefon/pd/D123"], "max_price": 2000.0,
+                           "id": "old-link"}]
+    tg = FakeTG()
+    e = engine_with([watch_from_dict(PS5)], state=st, tg=tg)
+    assert [w.id for w in e.all_watches()] == ["ps5", "old-link"]
+    e.run_cycle()                                     # used to raise ValueError: Invalid IPv6 URL
+    assert any("PS5" in t and fmt_price(1999) in t for t in texts(tg))
+    e.run_cycle()
+    warn = [t for t in texts(tg) if "не удаётся прочитать цену по ссылке" in t]
+    assert len(warn) == 1 and "/del 2" in warn[0] and "некорректная ссылка" in warn[0]
+    tg.updates = [upd(1, "/del 2")]
+    CommandProcessor(e).poll()
+    assert st.data["watches"] == [] and not st.data.get("url_fail")
+
+
+def test_set_with_rejected_value_leaves_the_watch_unchanged():
+    tg = FakeTG()
+    e = engine_with([watch_from_dict({"name": "TV", "query": "oled lg 55", "max_price": 5000})], tg=tg)
+    cp = CommandProcessor(e)
+    tg.updates = [upd(1, "/add playstation 5 slim до 2500")]
+    cp.poll()
+    before = copy.deepcopy(e.state.data["watches"])
+    tg.messages.clear()
+    tg.updates = [upd(2, "/set 2 https://[www.emag.ro/x/pd/D1"), upd(3, "/set 1 телевизор")]
+    cp.poll()
+    assert [t.startswith("Ошибка") for t in texts(tg)] == [True, True]
+    assert e.state.data["watches"] == before                       # not half-applied
+    assert not e.state.data.get("overrides", {}).get("tv")        # config watch: no override that would be ignored
+    assert [w.query for w in e.all_watches()] == ["oled lg 55", "playstation 5 slim"]
+    tg.updates = [upd(4, "/set 1 до 4000"), upd(5, "/set 2 до 2000")]
+    cp.poll()
+    assert [w.max_price for w in e.all_watches()] == [4000, 2000]  # valid changes still work
+
+
+def test_pause_then_resume_of_a_config_watch_in_the_same_run():
+    e = engine_with([watch_from_dict(PS5)], tg=FakeTG())
+    cp = CommandProcessor(e)
+    e.tg.updates = [upd(1, "/pause 1")]
+    cp.poll()
+    assert e.active_watches() == []
+    e.tg.updates = [upd(2, "/resume 1")]
+    cp.poll()
+    assert [w.id for w in e.active_watches()] == ["ps5"]            # the Config object was not left disabled
+    assert e.cfg.watches[0].enabled is True
+
+
+def _link_watch(n, url):
+    return watch_from_dict({"name": f"link {n}", "urls": [url], "max_price": 5000})
+
+
+def test_blocked_shop_is_reported_once_not_once_per_link(monkeypatch):
+    from bot.net import BlockedError
+
+    def blocked_product(self, url):
+        raise BlockedError("blocked (HTTP 403)", 403, url)
+
+    monkeypatch.setattr(FakeStore, "product", blocked_product)
+    FakeStore.blocked = True
+    tg = FakeTG()
+    watches = [watch_from_dict({"name": "tuf", "query": "asus tuf a15"}),
+               _link_watch(1, "https://fake.ro/p/1"), _link_watch(2, "https://fake.ro/p/2")]
+    e = engine_with(watches, tg=tg)
+    for _ in range(4):
+        e.run_cycle()
+    assert len([t for t in texts(tg) if "не отвечают" in t]) == 1
+    assert not [t for t in texts(tg) if "не удаётся прочитать" in t]
+
+    # the same with URL watches only: still one store-level message
+    tg2 = FakeTG()
+    e2 = engine_with(watches[1:], tg=tg2)
+    for _ in range(4):
+        e2.run_cycle()
+    assert len([t for t in texts(tg2) if "не отвечают" in t]) == 1
+    assert not [t for t in texts(tg2) if "не удаётся прочитать" in t]
+
+
+def test_dead_link_on_a_working_shop_is_a_link_warning_not_a_shop_warning(monkeypatch):
+    def gone(self, url):
+        raise FetchError("HTTP 404", 404, url)
+
+    monkeypatch.setattr(FakeStore, "product", gone)
+    tg = FakeTG()
+    e = engine_with([_link_watch(1, "https://fake.ro/p/1")], tg=tg)
+    for _ in range(4):
+        e.run_cycle()
+    assert not [t for t in texts(tg) if "не отвечают" in t]
+    warn = [t for t in texts(tg) if "не удаётся прочитать" in t]
+    assert len(warn) == 1 and "HTTP 404" in warn[0] and "блокирует" not in warn[0]
+
+
+def test_blocked_link_on_unknown_shop_explains_the_block(monkeypatch):
+    from bot.net import BlockedError
+
+    class WebShop(Store):
+        key = "web:unknown.ro"
+        name = "unknown.ro"
+        base_url = "https://unknown.ro"
+        categories = ("general",)
+
+        def product(self, url):
+            raise BlockedError("blocked (HTTP 403)", 403, url)
+
+    monkeypatch.setattr(engine_mod, "web_store_for", lambda url: WebShop)
+    tg = FakeTG()
+    e = engine_with([_link_watch(1, "https://unknown.ro/p/1")], tg=tg)
+    for _ in range(3):
+        e.run_cycle()
+    warn = [t for t in texts(tg) if "не удаётся прочитать" in t]
+    assert len(warn) == 1 and "блокирует" in warn[0]
+    assert not [t for t in texts(tg) if "не отвечают" in t]
+
+
+def test_daemon_backs_off_when_the_engine_cannot_be_built(monkeypatch, tmp_path):
+    def broken(*a, **k):
+        raise ValueError("custom shop entry is broken")
+
+    args, sleeps, _ = _daemon(monkeypatch, tmp_path, Telegram(None), lambda self: {})
+    monkeypatch.setattr(cli, "Engine", broken)
+    cli.cmd_daemon(args, sleep=sleeps.append, max_loops=6)
+    assert sleeps == [30, 60, 120, 240, 300, 300]       # used to spin once a second
+
+
+@pytest.mark.skipif(not (shutil.which("git") and shutil.which("bash")), reason="needs git and bash")
+def test_state_scripts_use_the_exact_state_branch(tmp_path):
+    """A tag called "state" or a branch like old/state must not be mistaken for the state branch."""
+    load = os.path.join(ROOT, "scripts", "load_state.sh")
+    save = os.path.join(ROOT, "scripts", "save_state.sh")
+    origin = tmp_path / "origin.git"
+    _git("init", "-q", "--bare", str(origin), cwd=tmp_path)
+    seed = tmp_path / "seed"
+    seed.mkdir()
+    _git("init", "-q", "-b", "old/state", cwd=seed)
+    (seed / "state.json").write_text('{"old": 1}')
+    _git("add", "state.json", cwd=seed)
+    _git("-c", "user.name=a", "-c", "user.email=a@b", "commit", "-qm", "x", cwd=seed)
+    _git("tag", "state", cwd=seed)
+    _git("push", "-q", str(origin), "old/state:refs/heads/old/state", "refs/tags/state", cwd=seed)
+    work = tmp_path / "work"
+    work.mkdir()
+    _git("init", "-q", cwd=work)
+    env = {**os.environ, "STATE_REMOTE": str(origin), "STATE_LOAD_TRIES": "1", "GIT_TERMINAL_PROMPT": "0"}
+
+    def sh(script):
+        return subprocess.run(["bash", script, "state.json"], cwd=work, env=env, capture_output=True, text=True)
+
+    f = work / "state.json"
+    r = sh(load)
+    assert r.returncode == 0 and json.loads(f.read_text()) == {}     # no state branch yet: fresh start
+    f.write_text('{"version": 1, "runs": 3}')
+    assert sh(save).returncode == 0
+    assert json.loads(_git("show", "refs/heads/state:state.json", cwd=origin).stdout) == {"version": 1, "runs": 3}
+    f.unlink()
+    r = sh(load)
+    assert r.returncode == 0 and json.loads(f.read_text()) == {"version": 1, "runs": 3}
+
+
+# ====================================================================== home runner follows /del + /add, renames (18, 19)
+def _offer_rec(price, np_=None):
+    return {"t": "Consola Sony PlayStation 5 Slim", "u": "https://fake.ro/a", "s": "fake", "p": price,
+            "h": [[1, price]], "np": np_, "m": True, "ls": int(time.time()), "min": price}
+
+
+def test_replay_of_watch_events_on_the_home_state():
+    main = State.load("")
+    main.forget_watch("ps")                            # /del + /add of the same name in the cloud
+    main.rename_watch("tv", "tv-2")                     # config/Telegram id collision resolved in the cloud
+    home = State.load("")
+    home.data["initialized"] = ["ps", "tv"]
+    home.data["offers"] = {"ps|fake::a": _offer_rec(2399, 2399), "tv|fake::b": _offer_rec(4000, 4000)}
+    mark = home.replay_watch_events(main.data["watch_events"], main.data["watch_seq"], 0)
+    assert mark == 2
+    assert list(home.offers) == ["tv-2|fake::b"] and home.data["initialized"] == ["tv-2"]
+    home.data["offers"]["ps|fake::c"] = _offer_rec(2100, 2100)   # collected for the NEW watch afterwards
+    assert home.replay_watch_events(main.data["watch_events"], main.data["watch_seq"], mark) == 2
+    assert "ps|fake::c" in home.offers                 # every event is applied once
+    # the home runner already moved the data itself (it met the collision first): no second move
+    home2 = State.load("")
+    home2.data["offers"] = {"tv-2|fake::b": _offer_rec(4000, 4000), "tv|fake::z": _offer_rec(10, 10)}
+    home2.replay_watch_events(main.data["watch_events"], main.data["watch_seq"], 0)
+    assert sorted(home2.offers) == ["tv-2|fake::b", "tv|fake::z"]
+    # a reset main state (numbering starts again) is replayed from the start
+    assert home.replay_watch_events(main.data["watch_events"], 2, 57) == 2
+
+
+def test_home_runner_sends_digest_for_a_watch_deleted_and_re_added_in_the_cloud(monkeypatch, tmp_path):
+    FakeStore.offers = [mk("Consola Sony PlayStation 5 Slim", 2399, pid="a")]
+    (tmp_path / "config.yaml").write_text("settings:\n  home_stores: [fake]\n  quiet_hours: null\n", encoding="utf-8")
+    main = State.load(str(tmp_path / "state.json"))
+    main.data["telegram"]["chat_id"] = "42"
+    main.data["watches"] = [{"name": "playstation 5 slim", "query": "playstation 5 slim", "max_price": 3000.0,
+                             "id": "playstation-5-slim"}]
+    main.forget_watch("playstation-5-slim")           # what cmd_add / tg_ui._create do for the re-added watch
+    main.save()
+    home = State.load(str(tmp_path / "state-home.json"))   # the home runner still remembers the deleted watch
+    home.data["initialized"] = ["playstation-5-slim"]
+    home.data["offers"] = {"playstation-5-slim|fake::a": _offer_rec(2399, 2399)}
+    home.save()
+    tg = FakeTG(chat_ids=())
+    monkeypatch.setattr(cli.Telegram, "from_env", classmethod(lambda cls: tg))
+    monkeypatch.setattr(engine_mod, "registry", lambda shops=None: {"fake": FakeStore})
+    monkeypatch.setattr(cli, "_print_summary", lambda s: None)
+    monkeypatch.setenv("BOT_MODE", "home")
+    monkeypatch.delenv("BOT_HOME_STATE", raising=False)
+    argv = ["--config", str(tmp_path / "config.yaml"), "run", "--state", str(tmp_path / "state.json")]
+    assert cli.main(argv) == 0
+    assert len(tg.messages) == 1 and "найдено 1" in tg.messages[0][1]   # fresh digest from the home shops
+    saved = json.loads((tmp_path / "state-home.json").read_text(encoding="utf-8"))
+    assert saved["events_applied"] == 1 and saved["initialized"] == ["playstation-5-slim"]
+    tg.messages.clear()
+    assert cli.main(argv) == 0
+    assert tg.messages == []                           # the event is not replayed again
+
+
+def test_home_runner_moves_collision_data_once_and_leaves_the_notice_to_the_cloud(monkeypatch):
+    monkeypatch.setenv("BOT_MODE", "home")
+    st = State.load("")
+    st.data["watches"] = [{"name": "playstation 5 slim", "query": "playstation 5 slim", "id": "playstation-5-slim"}]
+    st.data["offers"] = {"playstation-5-slim|fake::a": _offer_rec(1900, 1900)}
+    cfgw = watch_from_dict({"name": "PlayStation 5 Slim", "query": "playstation 5 slim", "max_price": 2500})
+    e = engine_with([cfgw], state=st)
+    e.reg = {}
+    e.all_watches()
+    assert list(st.offers) == ["playstation-5-slim-2|fake::a"] and not st.data.get("notices")
+    st.offers["playstation-5-slim|fake::b"] = _offer_rec(2400, 2400)   # the config watch's own home data
+    st.data["watches"][0]["id"] = "playstation-5-slim"   # next home run: the cloud has not renamed it yet
+    e.all_watches()
+    assert sorted(st.offers) == ["playstation-5-slim-2|fake::a", "playstation-5-slim|fake::b"]

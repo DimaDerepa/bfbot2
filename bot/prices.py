@@ -12,18 +12,22 @@ from typing import Any, Optional
 _NUM_RE = re.compile(r"\d[\d.,\s\u00a0\u202f']*\d|\d")
 # Price followed by a currency marker. The lookbehind refuses to start inside a word, so the digits of
 # a model name are never glued onto the price ("Galaxy S24 999 lei" -> 999, "OLED55C4 899 lei" -> 899).
+# Thousands groups use one kind of separator: "1.299.999" or "1 299 999", never "1.299 999" (an old price
+# without currency next to the new one: "1.299 999 lei" is 999 lei).
+_THOUSANDS = r"\d{1,3}(?:\.\d{3})+|\d{1,3}(?:[\s\u00a0\u202f]\d{3})+"
 PRICE_WITH_CURRENCY_RE = re.compile(
     r"(?<![\w.,])("
-    r"\d{1,3}(?:[.\s\u00a0\u202f]\d{3})+(?:,\d{1,2})?"   # 1.299,99 / 1 299,99 / 12.999
+    r"(?:" + _THOUSANDS + r")(?:,\d{1,2})?"                # 1.299,99 / 1 299,99 / 12.999
     r"|\d{1,3}\.\d{5}"                                   # 4.59999 (eMAG <sup> flattened)
     r"|\d+(?:[.,]\d{1,2})?"                              # 1299,99 / 89
-    r"|(?:\d{1,3}(?:[.\s\u00a0\u202f]\d{3})+|\d+)\s+\d{2}"   # 2.599 99 / 49 99 (decimals in their own element)
+    r"|(?:" + _THOUSANDS + r"|\d+)\s+\d{2}"               # 2.599 99 / 49 99 (decimals in their own element)
     r")\s*(?:lei|ron)\b",
     re.IGNORECASE,
 )
 # The last alternative above: integer part, whitespace, exactly two decimals (Carrefour "2.599 99 Lei").
-_SPLIT_DECIMALS_RE = re.compile(r"(\d{1,3}(?:[.\s]\d{3})+|\d+)\s+(\d{2})")
+_SPLIT_DECIMALS_RE = re.compile(r"(" + _THOUSANDS + r"|\d+)\s+(\d{2})")
 _SEP_END_RE = re.compile(r"\d[.,]$")
+_DECIMALS_START_RE = re.compile(r"\d{2}(?!\d)")      # "99", "99 lei": the decimals after a "2.999," element
 _DOUBLE_COMMA_RE = re.compile(r"(\d)\s*,\s*,\s*(\d)")
 
 
@@ -137,8 +141,10 @@ def element_price_text(el) -> str:
             sup.replace_with(" " + t)
     text = ""
     for s in el.stripped_strings:
-        if text and _SEP_END_RE.search(text) and s[:1].isdigit():
-            text += s                     # "2.999," | "99" from separate elements
+        if text and _SEP_END_RE.search(text) and _DECIMALS_START_RE.match(s):
+            text += s                     # "2.999," | "99" from separate elements (not "Model 2024." | "1.299 lei")
+        elif text and s in (",", ".") and text[-1:].isdigit():
+            text += s                     # "1.299" | "," | "99": the separator in its own element
         else:
             text = f"{text} {s}" if text else s
     return _DOUBLE_COMMA_RE.sub(r"\1,\2", text.replace(" ,", ","))

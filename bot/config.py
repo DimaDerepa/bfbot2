@@ -104,7 +104,7 @@ def watch_from_dict(d: dict, origin: str = "config", *, validate: bool = True) -
     for a, real in aliases.items():
         if a in d and real not in d:
             d[real] = d.pop(a)
-    for k in ("must_include", "any_of", "exclude", "urls", "skip_stores"):
+    for k in ("must_include", "any_of", "exclude", "urls", "skip_stores", "extra_queries"):
         if k in d:
             d[k] = _as_list(d[k])
     for k in ("stores", "categories"):
@@ -187,7 +187,10 @@ _MULT_RE = re.compile(r"(?:к|k|тыс\.?|тысяч[аи]?)$", re.IGNORECASE)
 _MULT_WORDS = {"к", "k", "тыс", "тыс.", "тысяч", "тысячи", "тысяча"}
 _MAX_WORDS = {"до", "<", "<=", "≤"}
 _MIN_WORDS = {"от", ">", ">=", "≥"}
-_DISCOUNT_WORDS = {"скидка", "скидкой", "скидки", "discount"}
+_DISCOUNT_WORDS = {"скидка", "скидкой", "скидки", "скидку", "discount"}
+_GLUED_DISCOUNT_RE = re.compile(r"(?:скидк[аиуой]{1,2}|discount)[:=]?(\d+(?:[.,]\d+)?)%?")   # "скидка20", "скидка:20%"
+_LIST_CONT_RE = re.compile(r",*(?:[a-z][a-z0-9_.\-]*,*)*")           # store / category names after "@emag,"
+_BARE_LINK_RE = re.compile(r"(?:www\.|[a-z0-9\-]+(?:\.[a-z0-9\-]+)*\.(?:ro|com|eu|net|org|md)/)\S*")
 _GROUP_RE = re.compile(r"\d{3}(?:[.,]\d{1,2})?(?:lei|ron|lej|лей|леев|лея|леи)?\.?", re.IGNORECASE)
 _BARE_PRICE_RE = re.compile(r"\d[\d.,]*(?:lei|ron|lej|лей|леев|лея|леи)\.?", re.IGNORECASE)
 _NUMBER_RE = re.compile(r"\d[\d.,]*")
@@ -223,7 +226,9 @@ def _take_number(toks: list[str], j: int, first: Optional[str] = None) -> tuple[
     Returns (value, index of the next unread token); value None when it is not a number."""
     s = toks[j] if first is None else first
     k = j + 1
-    if re.fullmatch(r"\d{1,3}", s) and k < len(toks) and _GROUP_RE.fullmatch(toks[k]):
+    # "до 500 512" is 500 lei and the word "512", so a group follows 1-2 digits only, or is "000" ("до 120 000")
+    while (k < len(toks) and _GROUP_RE.fullmatch(toks[k]) and re.fullmatch(r"\d+", s)
+           and (len(s) <= 2 or toks[k].startswith("000"))):
         s += toks[k]
         k += 1
     v = _num(s)
@@ -255,16 +260,28 @@ def parse_watch_spec(text: str) -> dict:
         after_number_word, prev_numeric_word = prev_numeric_word, False
         if low.startswith(("http://", "https://")):
             spec.setdefault("urls", []).append(t)
+        elif _BARE_LINK_RE.fullmatch(low):
+            spec.setdefault("urls", []).append("https://" + t)        # "www.emag.ro/..." copied without https://
         elif "=" in t and t.split("=", 1)[0].lower() in {
             "max", "min", "discount", "stores", "skip", "exclude", "include", "any_of", "categories", "drop_pct", "name"
         }:
             k, v = t.split("=", 1)
             k = k.lower()
             if k in ("max", "min", "discount", "drop_pct"):
-                n = _num(v.rstrip("%")) if v.strip() else None
-                if v.strip() and n is None:
-                    raise ValueError(f"Не понял число в «{t}». Пример: max=4800")
-                spec[{"max": "max_price", "min": "min_price", "discount": "min_discount"}.get(k, k)] = n
+                fk = {"max": "max_price", "min": "min_price", "discount": "min_discount"}.get(k, k)
+                if v.strip():
+                    n, j = _take_number(toks, i, first=v.rstrip("%"))     # "max=4 800", "max=5k lei"
+                    if n is None:
+                        raise ValueError(f"Не понял число в «{t}». Пример: max=4800")
+                    spec[fk] = n
+                    i = j
+                    continue
+                n, j = _take_number(toks, i + 1) if i + 1 < len(toks) else (None, i)
+                if n is not None:                                          # "max= 4800"
+                    spec[fk] = n
+                    i = j
+                    continue
+                spec[fk] = None                                            # "max=" clears the limit (/set)
             elif k in ("stores", "skip", "exclude", "include", "any_of", "categories"):
                 fk = {"skip": "skip_stores", "include": "must_include"}.get(k, k)
                 spec.setdefault(fk, []).extend(_as_list(v))
@@ -284,6 +301,8 @@ def parse_watch_spec(text: str) -> dict:
             spec["max_price" if key in _MAX_WORDS else "min_price"] = v
             i = j
             continue
+        elif _GLUED_DISCOUNT_RE.fullmatch(low):
+            spec["min_discount"] = _num(_GLUED_DISCOUNT_RE.fullmatch(low).group(1))
         elif key in _DISCOUNT_WORDS:
             j = i + 1
             if j < len(toks) and toks[j].lower() in ("от", ">", ">=", "≥", "from"):   # "скидка от 25%"
@@ -320,7 +339,8 @@ def parse_watch_spec(text: str) -> dict:
         elif t[0] in "@^#" and len(t) > 1:
             val = t[1:]
             # "@emag, altex" / "@emag ,altex": the comma continues the list over the space
-            while i + 1 < len(toks) and (val.endswith(",") or toks[i + 1].startswith(",")):
+            while (i + 1 < len(toks) and (val.endswith(",") or toks[i + 1].startswith(","))
+                   and _LIST_CONT_RE.fullmatch(toks[i + 1].lower())):     # not "@emag, до 3000"
                 i += 1
                 val += toks[i]
             field_ = {"@": "stores", "^": "skip_stores", "#": "categories"}[t[0]]
@@ -331,11 +351,12 @@ def parse_watch_spec(text: str) -> dict:
             spec["in_stock"] = False
         elif low == "~":
             spec["strict"] = False
-        elif low.rstrip(".") in _CYR_CURRENCY:
-            pass                                                   # "лей" is never part of a product name
         elif (after_number_word and low.rstrip(".") in _CURRENCY) or _BARE_PRICE_RE.fullmatch(low):
+            # "4800 lei" / "4800 лей" without "до"/"от": the number would become a mandatory title word
             shown = f"{query_words[-1]} {t}" if after_number_word else t
             raise ValueError(f"Не понял «{shown}». Цену пишите так: до 4800 (максимальная) или от 3000 (минимальная)")
+        elif low.rstrip(".") in _CYR_CURRENCY:
+            pass                                                   # "лей" is never part of a product name
         else:
             w = t.strip('"')
             query_words.append(w)

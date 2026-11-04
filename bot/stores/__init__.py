@@ -39,17 +39,19 @@ def _discover() -> None:
                 _BUILTIN[obj.key] = obj
 
 
-def _shop_specs(custom_shops: Any) -> list:
-    """settings.shops as a list of entries, whatever shape the (hand-written) YAML gave it."""
+def _shop_specs(custom_shops: Any) -> list[tuple[str, Any]]:
+    """settings.shops as (label, entry) pairs, whatever shape the (hand-written) YAML gave it."""
     if not custom_shops:
         return []
     if isinstance(custom_shops, dict):
-        values = list(custom_shops.values())
-        if values and all(isinstance(v, dict) for v in values):   # {myshop: {platform: ..., base_url: ...}, ...}
-            return [{**v, "key": v.get("key") or k} for k, v in custom_shops.items()]
-        return [custom_shops]                                       # one shop written without the leading "- "
+        # {myshop: {platform: ..., base_url: ...}, ...}: no field of one shop spec is itself a mapping, so any
+        # mapping value means "key -> spec"; the other values (e.g. `myshop:` left empty) are skipped with a message
+        if any(isinstance(v, dict) for v in custom_shops.values()):
+            return [(f"shops.{k}", {**v, "key": v.get("key") or k} if isinstance(v, dict) else v)
+                    for k, v in custom_shops.items()]
+        return [("shops[0]", custom_shops)]                         # one shop written without the leading "- "
     if isinstance(custom_shops, (list, tuple)):
-        return list(custom_shops)
+        return [(f"shops[{i}]", spec) for i, spec in enumerate(custom_shops)]
     msg = f"settings.shops: ожидался список магазинов, получено {custom_shops!r}"
     log.error("%s", msg)
     SHOP_ERRORS["shops"] = msg
@@ -61,19 +63,19 @@ def registry(custom_shops: Any = ()) -> dict[str, type[Store]]:
     _discover()
     reg = dict(_BUILTIN)
     SHOP_ERRORS.clear()
-    for i, spec in enumerate(_shop_specs(custom_shops)):
+    for label, spec in _shop_specs(custom_shops):
         if not isinstance(spec, dict):
-            msg = (f"settings.shops[{i}]: магазин нужно описать полями key / platform / base_url "
-                   f"(см. README), а получено {spec!r}; магазин пропущен")
+            msg = (f"settings.{label}: магазин нужно описать полями key / platform / base_url "
+                   f"(см. пример в config.yaml), а получено {spec!r}; магазин пропущен")
             log.error("%s", msg)
-            SHOP_ERRORS[f"shops[{i}]"] = msg
+            SHOP_ERRORS[label] = msg
             continue
         try:
             cls = make_custom_store(spec)
         except Exception as e:  # a typo in one shop must not stop the whole bot
             msg = str(e) if isinstance(e, ValueError) else f"shop {spec.get('key')!r}: {type(e).__name__}: {e}"
             log.error("%s; магазин пропущен", msg)
-            SHOP_ERRORS[str(spec.get("key") or f"shops[{i}]")] = msg
+            SHOP_ERRORS[str(spec.get("key") or label)] = msg
             continue
         if cls.key in _BUILTIN:
             log.warning("custom shop %r replaces the built-in store with the same key", cls.key)
