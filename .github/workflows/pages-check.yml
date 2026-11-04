@@ -1,12 +1,19 @@
 name: pages-check
 on: workflow_dispatch
 permissions:
-  pages: read
+  pages: write
   contents: read
 jobs:
   check:
     runs-on: ubuntu-latest
     steps:
+      - name: Enable Pages (main branch, root folder)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api -X POST "repos/$GITHUB_REPOSITORY/pages" -f "source[branch]=main" -f "source[path]=/" || true
+          sleep 60
+
       - name: Pages config and URLs
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
