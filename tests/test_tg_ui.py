@@ -176,3 +176,12 @@ def test_mini_app_roundtrip(monkeypatch):
     cp.poll()
     assert e.all_watches() == []
     assert any("Сохранено" in t for t in texts(tg))
+
+
+def test_mini_app_copies_in_sync():
+    import os
+
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    a = open(os.path.join(root, "app", "index.html"), encoding="utf-8").read()
+    b = open(os.path.join(root, "docs", "app", "index.html"), encoding="utf-8").read()
+    assert a == b, "app/index.html and docs/app/index.html must be identical (GitHub Pages may serve either)"
