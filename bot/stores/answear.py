@@ -4,9 +4,14 @@ The HTML search route is broken for bots: https://answear.ro/k?search={q} redire
 2026-09-28) and /s?q= is unverified, so the shop's own search backend is used instead:
   GET https://live.luigisbox.com/search?tracker_id={TRACKER_ID}&q={q}&f[]=type:product&size=24&page={N}
       (form-encoded: spaces -> '+'; Answear's own open-source client answear/luigis-box-bundle and the Apify
-      Answear actor use this API). TRACKER_ID ("111111-222222" shape) is specific to answear.ro and NOT known: it is
-      discovered once per process from the home page HTML (tracker id / Luigi's Box LBX-<n>.js script, which is
-      then read) or set with the env var ANSWEAR_LUIGISBOX_TRACKER_ID. No tracker id -> [] (diagnostics show it).
+      Answear actor use this API). TRACKER_ID ("111111-222222" shape) is specific to answear.ro and NOT publicly
+      documented (GitHub / web search 2026-11: neither the bundle, its tests nor any scraper names it), so it is
+      discovered at runtime from https://answear.ro/ (fetched once per process, cached 24 h, a miss retried after
+      1 h): a tracker-id key / data attribute (JSON, escaped JSON or JS literal), else the "{n}-{m}" id whose first
+      part is the number of the Luigi's Box script LBX-{n}.js, else that script itself is read. The env var
+      ANSWEAR_LUIGISBOX_TRACKER_ID overrides discovery; FALLBACK_TRACKER_ID is used when discovery finds nothing
+      (None until a live run confirms the id). No tracker id -> [] (last_strategy "luigisbox:no-tracker-id");
+      `tracker_source` tells where the id came from. A 4xx from Luigi's Box drops a discovered id from the cache.
 Response: results.hits[] {url (relative "/p/{slug}-{id}.html"), type "product", attributes{title, brand[0],
   price_amount (float RON) | price (number or "199,90 lei"), price_old_amount | price_old (when discounted),
   availability 0/1, id[0], image_link, web_url[0]}} - attribute values are often one-element lists.
@@ -31,13 +36,16 @@ from ._fashion import clean_url, dedupe, first, join_title, norm, num, raise_if_
 LUIGIS_SEARCH = "https://live.luigisbox.com/search"
 TRACKER_ENV = "ANSWEAR_LUIGISBOX_TRACKER_ID"
 _TRACKER_RE = re.compile(r"\b(\d{3,8}-\d{3,8})\b")
-_TRACKER_CTX_RE = re.compile(r"""tracker[_-]?id["']?\s*[:=]\s*["'](\d{3,8}-\d{3,8})["']""", re.I)
-_LBX_RE = re.compile(r"""(https?:)?//scripts\.luigisbox\.(?:com|tech)/(LBX-\d+)\.js""", re.I)
+# "trackerId":"1-2" / \"tracker_id\":\"1-2\" (JSON inside a JSON string) / TrackerId: '1-2' / data-tracker-id="1-2"
+_TRACKER_CTX_RE = re.compile(r"""tracker[_-]?id\\*["']?\s*[:=]\s*\\*["'](\d{3,8}-\d{3,8})\\*["']""", re.I)
+_LBX_RE = re.compile(r"""(https?:)?//scripts\.luigisbox\.(?:com|tech)/(LBX-(\d+))\.js""", re.I)
+# answear.ro's Luigi's Box tracker id, when known from a trusted source (none public as of 2026-11)
+FALLBACK_TRACKER_ID: Optional[str] = None
 _ID_RE = re.compile(r"-(\d{4,})\.html$")
 
-# discovered tracker id per process: (id or None, monotonic expiry). `python -m bot daemon` runs for weeks, so a
-# miss (home page down / no id in it) is retried after an hour and a hit is re-checked daily.
-_TRACKER_CACHE: dict[str, tuple[Optional[str], float]] = {}
+# discovered tracker id per process: (id or None, monotonic expiry, source). `python -m bot daemon` runs for weeks,
+# so a miss (home page down / no id in it) is retried after an hour and a hit is re-checked daily.
+_TRACKER_CACHE: dict[str, tuple[Optional[str], float, str]] = {}
 _HIT_TTL = 24 * 3600.0
 _MISS_TTL = 3600.0
 
@@ -52,6 +60,12 @@ def find_tracker_id(text: str) -> Optional[str]:
     m = _TRACKER_CTX_RE.search(text or "")
     if m:
         return m.group(1)
+    lbx = _LBX_RE.search(text or "")
+    if lbx:
+        # the tracker id starts with the number of the site's LBX-{n}.js script: "{n}-{m}" anywhere on the page
+        m = re.search(r"(?<![\d-])" + lbx.group(3) + r"-(\d{3,8})(?![\d-])", text)
+        if m:
+            return f"{lbx.group(3)}-{m.group(1)}"
     low = (text or "").lower()
     for m in _TRACKER_RE.finditer(text or ""):
         ctx = low[max(0, m.start() - 160):m.end() + 40]
@@ -70,30 +84,42 @@ class AnswearStore(Store):
     min_delay = 2.0
     extra_headers = {"Referer": "https://answear.ro/"}
 
+    def __init__(self, *a, **kw) -> None:
+        super().__init__(*a, **kw)
+        self.tracker_source = ""     # env | home | lbx-script | fallback | "" (none): for diagnostics
+
     # ------------------------------------------------------------------ tracker id
     def tracker_id(self) -> Optional[str]:
         env = norm(os.environ.get(TRACKER_ENV))
         if env:
+            self.tracker_source = "env"
             return env
         cached = _TRACKER_CACHE.get("answear")
         if cached is not None and time.monotonic() < cached[1]:
+            self.tracker_source = cached[2]
             return cached[0]
         tid: Optional[str] = None
+        source = ""
         try:
             resp = self.http.get(self.base_url + "/")
             html = resp.text or ""
             tid = find_tracker_id(html)
+            source = "home" if tid else ""
             if not tid:
                 m = _LBX_RE.search(html)
                 if m:
                     js = self.http.get(f"https://scripts.luigisbox.com/{m.group(2)}.js",
                                        headers={"Accept": "*/*"}).text or ""
                     tid = find_tracker_id(js) or (_TRACKER_RE.search(js).group(1) if _TRACKER_RE.search(js) else None)
+                    source = "lbx-script" if tid else ""
         except BlockedError:
             raise
         except FetchError:
             tid = None
-        _TRACKER_CACHE["answear"] = (tid, time.monotonic() + (_HIT_TTL if tid else _MISS_TTL))
+        if not tid and FALLBACK_TRACKER_ID:
+            tid, source = FALLBACK_TRACKER_ID, "fallback"
+        _TRACKER_CACHE["answear"] = (tid, time.monotonic() + (_HIT_TTL if tid else _MISS_TTL), source)
+        self.tracker_source = source
         return tid
 
     # ------------------------------------------------------------------ search
@@ -108,9 +134,14 @@ class AnswearStore(Store):
         if not tracker:
             self.last_strategy = "luigisbox:no-tracker-id"
             return []
-        data = self.get_json(self.search_url(query, tracker, page),
-                             headers={"Accept": "application/json", "Referer": "https://answear.ro/",
-                                      "Origin": "https://answear.ro"})
+        try:
+            data = self.get_json(self.search_url(query, tracker, page),
+                                 headers={"Accept": "application/json", "Referer": "https://answear.ro/",
+                                          "Origin": "https://answear.ro"})
+        except FetchError as e:
+            if e.status in (400, 401, 403, 404) and self.tracker_source in ("home", "lbx-script", "fallback"):
+                _TRACKER_CACHE.pop("answear", None)    # stale / wrong tracker id: rediscover on the next search
+            raise
         results = (data or {}).get("results") if isinstance(data, dict) else None
         hits = (results or {}).get("hits") if isinstance(results, dict) else None
         out = dedupe(self._hit(h) for h in hits or [] if isinstance(h, dict))

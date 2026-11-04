@@ -89,7 +89,7 @@ function decode(s) {
 }
 const params = new URLSearchParams(location.search);
 const DATA = decode(params.get("d") || "") || { w: [], s: [], t: 0 };
-const STORES = DATA.s || [];
+const STORES = (DATA.s || []).slice();
 const orig = JSON.parse(JSON.stringify(DATA.w || []));
 const state = JSON.parse(JSON.stringify(DATA.w || []));
 const deleted = new Set();
@@ -247,6 +247,22 @@ if (tg && tg.MainButton) tg.MainButton.onClick(save);
 document.getElementById("fallbackSave").onclick = save;
 if (!tg || !tg.initData) document.getElementById("sub").textContent = "Откройте через кнопку «⚙️ Управление» в боте.";
 render(); refreshButton();
+
+// live data: the bot keeps a snapshot in state.json on the public "state" branch
+(async () => {
+  if (!DATA.r) return;
+  try {
+    const r = await fetch(`https://raw.githubusercontent.com/${DATA.r}/state/state.json?ts=${Date.now()}`, { cache: "no-store" });
+    if (!r.ok) return;
+    const live = (await r.json()).app;
+    if (!live || !(live.t > (DATA.t || 0)) || ops().length) return;   // keep the user's unsaved edits
+    DATA.t = live.t; DATA.s = live.s || DATA.s;
+    STORES.splice(0, STORES.length, ...(live.s || STORES));
+    orig.splice(0, orig.length, ...JSON.parse(JSON.stringify(live.w || [])));
+    state.splice(0, state.length, ...JSON.parse(JSON.stringify(live.w || [])));
+    render(); refreshButton();
+  } catch (e) { /* offline: the snapshot from the button is used */ }
+})();
 </script>
 </body>
 </html>

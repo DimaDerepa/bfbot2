@@ -53,6 +53,7 @@ class CommandProcessor:
         from .tg_ui import TelegramUI
 
         self.ui = TelegramUI(self)
+        engine.markup_factory = self.ui.main_kb
 
     # ------------------------------------------------------------------ polling
     def poll(self, timeout: int = 0) -> Optional[int]:

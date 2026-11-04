@@ -573,10 +573,17 @@ class Engine:
             silent = in_quiet_hours(self.settings.quiet_hours)
         except Exception:  # never let the quiet-hours lookup stop a deal alert
             silent = False
+        markup = None
+        factory = getattr(self, "markup_factory", None)
+        if factory:
+            try:   # every message carries the up-to-date "⚙️ Управление" button
+                markup = factory()
+            except Exception:
+                markup = None
         if self.tg.chat_ids:
-            res = self.tg.send(text, silent=silent)
+            res = self.tg.send(text, silent=silent, markup=markup)
         elif chat:
-            res = self.tg.send(text, chat_id=str(chat), silent=silent)
+            res = self.tg.send(text, chat_id=str(chat), silent=silent, markup=markup)
         else:
             print("---- [no chat bound yet: will be sent after /start] ----\n" + text)
             return False

@@ -100,3 +100,57 @@ def test_answear_tracker_miss_is_retried_after_ttl(monkeypatch):
     clock[0] += answear_mod._MISS_TTL + 1                              # daemon mode: an hour later it is retried
     http.routes = {"live.luigisbox.com/search": HITS, "https://answear.ro/": HOME}
     assert store.search("tommy jeans") and http.calls[1] == "https://answear.ro/"
+
+
+SEARCH_URL_START = "https://live.luigisbox.com/search?tracker_id="
+
+
+@pytest.mark.parametrize("home, expected", [
+    # Next.js-style config kept as a JSON string inside JSON (escaped quotes)
+    ('<script id="__NEXT_DATA__" type="application/json">{"props":{"pageProps":{"appConfig":'
+     '"{\\"luigisBox\\":{\\"trackerId\\":\\"312904-418722\\",\\"locale\\":\\"ro\\"}}"}}}</script>', "312904-418722"),
+    ('<div id="search" data-luigisbox-tracker-id="312904-418723"></div>', "312904-418723"),
+    ("<script>Luigis.Search({TrackerId: '312904-418724', Locale: 'ro'}, '#q')</script>", "312904-418724"),
+    # no "tracker" key at all: the id is the "{n}-{m}" pair whose n is the LBX-{n}.js script number
+    ('<script async src="https://scripts.luigisbox.com/LBX-312904.js"></script>' + "<p>.</p>" * 60
+     + '<script>window.cfg={"build":"2026-11-04","search":{"key":"312904-555001"}}</script>', "312904-555001"),
+])
+def test_answear_tracker_discovered_from_home_page(home, expected):
+    http = FakeHttp({"live.luigisbox.com/search": HITS, "https://answear.ro/": f"<html><body>{home}</body></html>"})
+    store = make_store(AnswearStore, http)
+    assert store.search("tricou")
+    assert http.calls[0] == "https://answear.ro/" and len(http.calls) == 2       # no script fetch needed
+    assert http.calls[1].startswith(f"{SEARCH_URL_START}{expected}&q=tricou&")
+    assert store.tracker_source == "home"
+    other = make_store(AnswearStore, http)                                       # cached for the process
+    other.search("rochie")
+    assert http.calls.count("https://answear.ro/") == 1 and other.tracker_source == "home"
+
+
+def test_answear_tracker_source_for_script_env_and_fallback(monkeypatch):
+    home = HOME.replace('"trackerId":"312904-418722",', "")
+    js = 'Luigis.Scan({"TrackerId":"312904-777001"});'
+    http = FakeHttp({"live.luigisbox.com/search": HITS, "scripts.luigisbox.com/LBX-312904.js": js,
+                     "https://answear.ro/": home})
+    store = make_store(AnswearStore, http)
+    store.search("tricou")
+    assert store.tracker_source == "lbx-script"
+    answear_mod._reset_tracker_cache()
+    monkeypatch.setattr(answear_mod, "FALLBACK_TRACKER_ID", "312904-999999")
+    http = FakeHttp({"live.luigisbox.com/search": HITS, "https://answear.ro/": "<html>no config</html>"})
+    store = make_store(AnswearStore, http)
+    assert store.search("tricou") and store.tracker_source == "fallback"
+    assert http.calls[1].startswith(f"{SEARCH_URL_START}312904-999999&q=tricou&")
+    monkeypatch.setenv(answear_mod.TRACKER_ENV, "11111-22222")
+    store.search("tricou")
+    assert store.tracker_source == "env"
+
+
+def test_answear_rejected_tracker_is_rediscovered():
+    http = FakeHttp({"live.luigisbox.com/search": (400, {"error": "unknown tracker"}), "https://answear.ro/": HOME})
+    store = make_store(AnswearStore, http)
+    with pytest.raises(answear_mod.FetchError):
+        store.search("rochie")
+    http.routes = {"live.luigisbox.com/search": HITS, "https://answear.ro/": HOME}
+    assert store.search("tommy jeans")
+    assert http.calls.count("https://answear.ro/") == 2                         # id looked up again after the 400

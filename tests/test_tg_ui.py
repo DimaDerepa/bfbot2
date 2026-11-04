@@ -143,8 +143,19 @@ def test_mini_app_roundtrip(monkeypatch):
     cp.poll()
     kb = [p.get("markup") for m, p in tg.calls if m == "send" and p.get("markup")]
     # TG.send stores markup? it records text/chat only -> inspect via ui directly
+    import bot.tg_ui as ui_mod
+
+    class R:
+        def __init__(self, code): self.status_code = code
+
+    ui_mod._APP_URL_CACHE.clear()
+    monkeypatch.setattr("requests.head", lambda *a, **k: R(404))      # Pages not switched on -> githack
+    assert ui_mod.app_url() == "https://raw.githack.com/DimaDerepa/bfbot2/main/docs/app/index.html"
+    ui_mod._APP_URL_CACHE.clear()
+    monkeypatch.setattr("requests.head", lambda *a, **k: R(200))      # Pages on -> github.io
     url = cp.ui.main_kb()["keyboard"][0][0]["web_app"]["url"]
     assert url.startswith("https://dimaderepa.github.io/bfbot2/app/?d=")
+    assert cp.ui.webapp_snapshot()["r"] == "DimaDerepa/bfbot2"
     data = {"v": 1, "ops": [{"op": "add", "text": "rtx 5070 до 3200"}]}
     tg.updates = [{"update_id": 2, "message": {"chat": {"id": 5}, "web_app_data": {"data": json.dumps(data)}}}]
     cp.poll()

@@ -32,18 +32,41 @@ MAIN_KB = {
 }
 
 
+_APP_URL_CACHE: dict = {}
+
+
+def repo_slug() -> Optional[str]:
+    import os
+
+    repo = os.environ.get("GITHUB_REPOSITORY") or os.environ.get("BOT_REPO") or ""
+    return repo if "/" in repo else None
+
+
 def app_url() -> Optional[str]:
-    """Mini App page (GitHub Pages of this repo, docs/app/) — BOT_APP_URL overrides."""
+    """Mini App page. BOT_APP_URL overrides; otherwise GitHub Pages of this repo (docs/app/) when it is
+    switched on, else the same file served by raw.githack.com (works without enabling Pages)."""
     import os
 
     url = os.environ.get("BOT_APP_URL")
     if url:
         return url
-    repo = os.environ.get("GITHUB_REPOSITORY", "")
-    if "/" in repo:
-        owner, name = repo.split("/", 1)
-        return f"https://{owner.lower()}.github.io/{name}/app/"
-    return None
+    repo = repo_slug()
+    if not repo:
+        return None
+    if repo in _APP_URL_CACHE:
+        return _APP_URL_CACHE[repo]
+    owner, name = repo.split("/", 1)
+    pages = f"https://{owner.lower()}.github.io/{name}/app/"
+    chosen = f"https://raw.githack.com/{owner}/{name}/main/docs/app/index.html"
+    try:
+        import requests
+
+        if requests.head(pages, timeout=6, allow_redirects=True).status_code == 200:
+            chosen = pages
+    except Exception:
+        pass
+    _APP_URL_CACHE[repo] = chosen
+    return chosen
 
 FIELDS = {
     "max_price": ("💰 Макс. цена", "Введите <b>максимальную цену</b> в леях, например <code>4800</code>.\n<code>0</code> — убрать ограничение."),
@@ -134,6 +157,13 @@ class TelegramUI:
     def webapp_payload(self) -> str:
         import base64
         import json
+
+        raw = json.dumps(self.webapp_snapshot(), ensure_ascii=False, separators=(",", ":"))
+        return base64.urlsafe_b64encode(raw.encode()).decode().rstrip("=")
+
+    def webapp_snapshot(self) -> dict:
+        """Everything the Mini App shows. Also stored in state.json ("app"), which the app reads live from the
+        public state branch, so it is fresh even if the keyboard button is old."""
         import time as _t
 
         from .stores import registry
@@ -149,8 +179,7 @@ class TelegramUI:
         reg = registry(getattr(self.engine.settings, "shops", ()))
         stores = [[k, c.name, 1 if c.aggregator else 0]
                   for k, c in sorted(reg.items(), key=lambda kv: (not kv[1].aggregator, kv[1].name.lower()))]
-        raw = json.dumps({"v": 1, "t": int(_t.time()), "w": ws, "s": stores}, ensure_ascii=False, separators=(",", ":"))
-        return base64.urlsafe_b64encode(raw.encode()).decode().rstrip("=")
+        return {"v": 1, "t": int(_t.time()), "r": repo_slug(), "w": ws, "s": stores}
 
     def handle_webapp(self, chat_id: str, raw: str) -> None:
         """Changes sent by the Mini App (Telegram.WebApp.sendData)."""

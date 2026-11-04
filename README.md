@@ -87,17 +87,19 @@
 * **облако GitHub** работает всегда: кнопки Telegram, Altex, Media Galaxy, Flanco, Auchan, ITGalaxy, IKEA, Dedeman, Carrefour;
 * **ваш компьютер**, пока он включён: eMAG, PC Garage, evoMAG, CEL, ForIT, Vexio, Leroy Merlin, compari.ro, price.ro. Уведомления приходят в тот же Telegram.
 
-### Установка (≈10 минут, один раз)
+### Установка (≈5 минут, один раз)
 
-1. Установите **Python 3.12+** (https://www.python.org/downloads/, при установке на Windows отметьте **Add python.exe to PATH**) и **Git** (https://git-scm.com/downloads).
-2. Откройте https://github.com/DimaDerepa/bfbot2/settings/actions/runners/new, выберите свою систему (**Windows**, **macOS** или **Linux**) и по очереди выполните показанные там команды:
-   * Windows: откройте **PowerShell** (Win → «PowerShell»);
-   * macOS/Linux: откройте **Terminal**.
+**Windows.** Нажмите Пуск, найдите **PowerShell**, правой кнопкой выберите **Запуск от имени администратора** и вставьте:
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass -Force; irm https://raw.githubusercontent.com/DimaDerepa/bfbot2/main/scripts/setup-home-windows.ps1 | iex
+```
+**macOS / Linux / Raspberry Pi.** В Терминале:
+```bash
+curl -fsSL https://raw.githubusercontent.com/DimaDerepa/bfbot2/main/scripts/setup-home.sh | bash
+```
+Скрипт поставит Git, скачает GitHub runner и откроет страницу GitHub. Скопируйте оттуда значение после `--token` и вставьте его в окно скрипта. В конце откроется страница, где нужно создать переменную **`HOME_RUNNER` = `true`**. На Windows после этого один раз перезагрузите компьютер. Python ставить не нужно: GitHub установит его сам при первом запуске.
 
-   На вопросы при `config` просто нажимайте Enter. На Windows на вопрос *«run as service?»* ответьте **Y**, тогда runner будет запускаться сам при включении компьютера. На macOS/Linux после настройки выполните `./svc.sh install && ./svc.sh start`.
-3. Откройте https://github.com/DimaDerepa/bfbot2/settings/variables/actions/new → Name: `HOME_RUNNER`, Value: `true` → **Add variable**.
-
-Готово. Каждые 10 минут, пока компьютер включён и подключён к интернету, он проверяет эти магазины. Ресурсов почти не нужно: проверка занимает около минуты, потом простой.
+Дальше всё работает само: пока компьютер включён, он каждые 10 минут проверяет эти магазины. Ключ Claude и токен Telegram на компьютер класть не нужно, они берутся из секретов GitHub.
 
 ### Без домашнего компьютера
 * **Прокси**: секрет `BOT_PROXY` = `http://user:pass@host:port` (румынский residential-прокси) и переменная `BOT_PROXY_STORES` = `emag,pcgarage`. Чтобы экономить трафик, в `config.yaml` укажите `store_every: {emag: 3}`: тогда eMAG будет проверяться каждую 3-ю проверку.

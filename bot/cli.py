@@ -48,6 +48,10 @@ def _print_summary(summary: dict) -> None:
         print(f"  [{status}] {k:<14} offers={s['offers']:<4} req={s['requests']:<3} {s['sec']:>5}s{err}")
 
 
+UI_VERSION = 3
+UI_NEWS = ("🆕 <b>Бот обновлён.</b> Внизу появилась кнопка <b>⚙️ Управление</b>: там все ваши товары и условия, "
+           "можно добавлять, менять и удалять. Можно просто написать боту, что ищете, обычными словами, например "
+           "<i>телефон 12 гб оперативки 2025 и новее не моторола до 1000$ скидка больше 20%</i>.")
 HOME_KEYS = ("offers", "initialized", "stores", "runs", "last_run", "last_summary", "url_fail", "events_applied")
 
 
@@ -88,6 +92,10 @@ def cmd_run(args) -> int:
     cp = CommandProcessor(engine, mode="actions")
     listen = 0.0 if (home_mode or args.dry_run) else float(os.environ.get("BOT_LISTEN_MINUTES") or 0) * 60
     t_end = time.time() + listen
+    if not home_mode and state.get("telegram", "chat_id") and state.data.get("ui_version") != UI_VERSION:
+        # one-time hello after an update: delivers the new menu (with the Mini App button) without any /command
+        state.data.setdefault("notices", []).append(UI_NEWS)
+        state.data["ui_version"] = UI_VERSION
     try:
         if not home_mode:
             n = cp.poll(timeout=0)
@@ -113,6 +121,11 @@ def cmd_run(args) -> int:
         if not home_mode:
             cp.poll(timeout=0)
     finally:
+        if not home_mode:
+            try:
+                state.data["app"] = cp.ui.webapp_snapshot()   # the Mini App reads this from the state branch
+            except Exception:
+                pass
         state.data.pop("home_offers", None)
         state.save()
     return 0
