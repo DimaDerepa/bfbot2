@@ -316,3 +316,50 @@ def test_heuristic_split_old_price_and_context():
     assert {(o.price, o.old_price) for o in heur(grid(card)).values()} == {(2199.99, 3199.99)}
     mixed = "<div class=card><a href='/p/{i}'>{n}</a><div class=prices><del>3.{i}99 lei</del> 2.{i}99 lei</div></div>"
     assert [(o.price, o.old_price) for o in heur(grid(mixed)).values()] == [(2099, 3099), (2199, 3199), (2299, 3299)]
+
+
+# ---------------------------------------------------------------- heuristic cards: markup seen in store fixtures
+def test_heuristic_cart_and_cta_links_are_not_titles():
+    # PC Garage: the price block also holds an "Adauga in cos" link to /cos-de-cumparaturi/adaugaincos-NNN/
+    pcg = grid("<div class=pb><div class=img><a href='/p/{i}/' title='{n}'><img alt='{n}'></a></div><h2><a href='/p/{i}/?utm_source=search'>{n}</a></h2>"
+               "<div class=bottom><div class=price-cont><p class=price>3.{i}99,99 RON</p><span class=pb-old-price>PRP: 3.{i}99,99 RON</span></div>"
+               "<div class=cart><a href='/cos-de-cumparaturi/adaugaincos-7{i}/' class='btn add_to_cart' rel=nofollow>Adauga in cos</a></div></div></div>")
+    assert [o.title for o in heur(pcg).values()] == NAMES
+    # price.ro: the price block links the product page as "Compară prețuri"
+    pr = grid("<div class=produs><div class=poza><a href='/preturi-{i}'><img alt='{n}'></a></div><h2><a href='/preturi-{i}?src=rezultate'>{n}</a></h2>"
+              "<div class=pret><span>de la <b>5.{i}20 lei</b></span><span class=rate>Rate de la 247 lei/lună</span>"
+              "<a class=compara href='/preturi-{i}'>Compară prețuri</a></div></div>")
+    assert [(o.title, o.price) for o in heur(pr).values()] == [(n, 5020.0 + 100 * i) for i, n in enumerate(NAMES)]
+
+
+def test_heuristic_query_identified_links_and_shop_link():
+    # compari single-shop cards: Jump.php?ProductAttributeId=N links, plus a shop-name link and an "Info" link
+    card = ("<div class=box><div class=img><a href='/Jump.php?ProductAttributeId=9{i}&amp;Referrer=search' title='{n}'><img alt='{n}'></a></div>"
+            "<h2><a href='/Jump.php?ProductAttributeId=9{i}&amp;Referrer=search'>{n}</a></h2><div class=top-right>"
+            "<a class=price href='/Jump.php?ProductAttributeId=9{i}'>1{i}9,90 RON</a><a href='/Jump.php?ProductAttributeId=9{i}&amp;ProductType=shop'>emag.ro</a>"
+            "</div><a class=info href='/produs-{i}/'>Info</a></div>")
+    by = heur(grid(card), "https://www.compari.ro/CategorySearch.php?st=x")
+    assert sorted((o.title, o.price) for o in by.values()) == sorted((n, 109.9 + 10 * i) for i, n in enumerate(NAMES))
+
+
+def test_heuristic_name_class_beats_short_alt():
+    # Fashion Days: the whole card is one link; the name sits in span.product-card-title, the image alt is short
+    card = ("<li class=product-card><a href='/p/{i}/'><img alt='Blugi'><span class=product-card-brand>Brand</span>"
+            "<span class=product-card-title>{n}</span><div><span class=product-card-price-new>389,99 Lei</span></div></a></li>")
+    assert [o.title for o in heur("<ul>" + grid(card) + "</ul>").values()] == NAMES
+
+
+def test_heuristic_unit_price_is_not_old_price():
+    card = ("<div class=tile><a href='/p/{i}'>{n}</a><div class=pricing><span class=unit-price>1.258,00 Lei / 100 ml</span>"
+            "<span class=min-price>6{i}9,00 Lei</span></div></div>")
+    assert [(o.price, o.old_price) for o in heur(grid(card)).values()] == [(609.0, None), (619.0, None), (629.0, None)]
+    # goods sold by area show only a unit price: it is still the card's price
+    area = "<div class=tile><a href='/p/{i}'>{n}</a><span>4{i},90 lei / mp</span></div>"
+    assert [o.price for o in heur(grid(area)).values()] == [40.9, 41.9, 42.9]
+
+
+def test_heuristic_carrefour_nested_decimals():
+    card = ("<li class=product><a class=img href='/produse/p-{i}'><img alt='{n}'></a><div class=name><a href='/produse/p-{i}' title='{n}'>{n}</a></div>"
+            "<div class=price-box><div class='price price-final'><span>6.7{i}9</span> <span> <span>99</span> <span>Lei</span> </span></div></div>"
+            "<form action='/checkout/cart/add/product/{i}/'><button title='Adauga in cos'><span>Adauga in cos</span></button></form></li>")
+    assert [o.price for o in heur("<ul>" + grid(card) + "</ul>").values()] == [6709.99, 6719.99, 6729.99]

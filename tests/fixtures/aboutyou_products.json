@@ -1,0 +1,43 @@
+{
+  "entities": [
+    {
+      "id": 4363435,
+      "isActive": true,
+      "isSoldOut": false,
+      "attributes": {
+        "brand": {"id": 1012, "key": "brand", "label": "Marcă", "type": "", "values": {"id": 290, "label": "JACK & JONES", "value": "jack_jones"}},
+        "name": {"id": 2001, "key": "name", "label": "Nume", "type": "", "values": {"label": "Geacă de primăvară-toamnă 'Rocky'"}}
+      },
+      "priceRange": {"min": {"currencyCode": "RON", "withTax": 22990}, "max": {"currencyCode": "RON", "withTax": 22990}},
+      "images": [{"hash": "images/9b1a2c3d4e5f60718293a4b5c6d7e8f9.jpg", "attributes": {}}],
+      "variants": [
+        {"id": 1, "attributes": {"vendorSize": {"values": {"label": "S"}}},
+         "stock": {"quantity": 0, "isSellableWithoutStock": false},
+         "price": {"currencyCode": "RON", "withTax": 22990, "withoutTax": 19319, "appliedReductions": [
+            {"category": "sale", "type": "relative", "amount": {"relative": 0.3, "absoluteWithTax": 9860}}]}},
+        {"id": 2, "attributes": {"vendorSize": {"values": {"label": "M"}}},
+         "stock": {"quantity": 4, "isSellableWithoutStock": false},
+         "price": {"currencyCode": "RON", "withTax": 22990, "withoutTax": 19319, "appliedReductions": [
+            {"category": "sale", "type": "relative", "amount": {"relative": 0.3, "absoluteWithTax": 9860}}]}}
+      ]
+    },
+    {
+      "id": 5120044,
+      "attributes": {
+        "brand": {"values": {"label": "Nike Sportswear"}},
+        "name": {"values": {"label": "Sneaker low 'AIR MAX 90'"}}
+      },
+      "images": [{"hash": "1f2e3d4c5b6a.png"}],
+      "variants": [
+        {"stock": {"quantity": 0, "isSellableWithoutStock": false}, "price": {"currencyCode": "RON", "withTax": 129999, "appliedReductions": []}}
+      ]
+    },
+    {
+      "id": 5120045,
+      "attributes": {"brand": {"values": {"label": "Nike"}}, "name": {"values": {"label": "Tricou"}}},
+      "variants": [{"price": {"currencyCode": "EUR", "withTax": 2999}}]
+    },
+    {"id": 5120046, "attributes": {}, "variants": []}
+  ],
+  "pagination": {"current": 1, "total": 1, "perPage": 40}
+}

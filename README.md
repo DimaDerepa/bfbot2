@@ -65,14 +65,28 @@
 
 Пункты можно задавать и в [`config.yaml`](config.yaml): там же примеры и общие настройки.
 
-## Если магазин блокирует облако
+## Домашний компьютер: eMAG, PC Garage, evoMAG, CEL, compari.ro
 
-Некоторые крупные магазины (Altex, возможно eMAG) защищены Akamai и могут блокировать IP дата-центров, включая GitHub. Бот сам напишет «⚠️ … не отвечает», если магазин недоступен 6 проверок подряд. Цены этих магазинов при этом всё равно видны через агрегаторы (compari.ro). Варианты:
+Эти магазины блокируют облако GitHub (проверено: HTTP 511/403 с IP Microsoft, даже через настоящий браузер). С домашнего румынского IP они работают. Схема гибридная:
 
-1. **Свой компьютер, Raspberry Pi или домашний сервер в Румынии** (надёжнее всего, домашний IP не блокируют):
-   * через Docker: создайте файл `.env` со строкой `TELEGRAM_BOT_TOKEN=...` и выполните `docker compose up -d --build`;
-   * или как self-hosted runner GitHub: *Settings → Actions → Runners → New self-hosted runner*, затем создайте переменную репозитория `RUNNER` = `self-hosted`. Те же проверки пойдут с вашего IP.
-2. **Прокси**: секрет `BOT_PROXY` = `http://user:pass@host:port`; переменная `BOT_PROXY_STORES` = `altex,emag`, чтобы использовать прокси только для них. Чтобы экономить трафик, в `config.yaml` укажите `store_every: {altex: 3}`: такой магазин будет опрашиваться каждую 3-ю проверку.
+* **облако GitHub** работает всегда: кнопки Telegram, Altex, Media Galaxy, Flanco, Auchan, ITGalaxy, IKEA, Dedeman, Carrefour;
+* **ваш компьютер**, пока он включён: eMAG, PC Garage, evoMAG, CEL, ForIT, Vexio, Leroy Merlin, compari.ro, price.ro. Уведомления приходят в тот же Telegram.
+
+### Установка (≈10 минут, один раз)
+
+1. Установите **Python 3.12+** (https://www.python.org/downloads/, при установке на Windows отметьте **Add python.exe to PATH**) и **Git** (https://git-scm.com/downloads).
+2. Откройте https://github.com/DimaDerepa/bfbot2/settings/actions/runners/new, выберите свою систему (**Windows**, **macOS** или **Linux**) и по очереди выполните показанные там команды:
+   * Windows: откройте **PowerShell** (Win → «PowerShell»);
+   * macOS/Linux: откройте **Terminal**.
+
+   На вопросы при `config` просто нажимайте Enter. На Windows на вопрос *«run as service?»* ответьте **Y**, тогда runner будет запускаться сам при включении компьютера. На macOS/Linux после настройки выполните `./svc.sh install && ./svc.sh start`.
+3. Откройте https://github.com/DimaDerepa/bfbot2/settings/variables/actions/new → Name: `HOME_RUNNER`, Value: `true` → **Add variable**.
+
+Готово. Каждые 10 минут, пока компьютер включён и подключён к интернету, он проверяет эти магазины. Ресурсов почти не нужно: проверка занимает около минуты, потом простой.
+
+### Без домашнего компьютера
+* **Прокси**: секрет `BOT_PROXY` = `http://user:pass@host:port` (румынский residential-прокси) и переменная `BOT_PROXY_STORES` = `emag,pcgarage`. Чтобы экономить трафик, в `config.yaml` укажите `store_every: {emag: 3}`: тогда eMAG будет проверяться каждую 3-ю проверку.
+* **Docker** на любом сервере или Raspberry Pi с румынским IP: файл `.env` со строкой `TELEGRAM_BOT_TOKEN=...`, затем `docker compose up -d --build`. В этом режиме бот работает полностью сам, без GitHub.
 
 ## Диагностика
 

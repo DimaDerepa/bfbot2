@@ -90,12 +90,8 @@ class SephoraStore(NextPager, Store):
             raise_if_challenge(html, soup, final)
             self.last_strategy = "redirect:home"
             return []
-        tiles = outermost(soup.select(".product-tile[data-tcproduct]"))
-        if tiles:
-            self.last_strategy = "tcproduct"
-        else:
-            tiles = outermost(soup.select("div.product-tile, .product-tile"))
-            self.last_strategy = "tiles"
+        tiles = outermost(soup.select(".product-tile"))
+        self.last_strategy = "tcproduct" if any(t.get("data-tcproduct") for t in tiles) else "tiles"
         out = dedupe(self._tile(t, final) for t in tiles)
         if out:
             return out

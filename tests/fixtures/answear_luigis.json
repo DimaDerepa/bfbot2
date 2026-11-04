@@ -1,0 +1,63 @@
+{
+  "results": {
+    "query": "tommy jeans",
+    "corrected_query": null,
+    "filters": ["type:product"],
+    "hits": [
+      {
+        "url": "/p/tommy-jeans-tricou-din-bumbac-culoarea-albastru-marin-neted-1209285.html",
+        "attributes": {
+          "id": [1209285],
+          "title": "Tommy Jeans tricou din bumbac culoarea albastru marin, neted",
+          "brand": ["Tommy Jeans"],
+          "category": ["Bărbați", "Îmbrăcăminte", "Tricouri"],
+          "price_amount": 119.9,
+          "price": "119,90 lei",
+          "price_old_amount": 179.9,
+          "price_old": "179,90 lei",
+          "availability": 1,
+          "image_link": "https://img2.ans-media.com/i/356x473/AW26-TSM0Z7_59X_F1.jpg",
+          "original_url": "/p/tommy-jeans-tricou-din-bumbac-culoarea-albastru-marin-neted-1209285.html"
+        },
+        "nested": [],
+        "type": "product",
+        "exact": true,
+        "alternative": false
+      },
+      {
+        "url": "/p/tommy-jeans-geaca-de-puf-barbati-culoarea-negru-de-iarna-1188460.html?utm_source=lb",
+        "attributes": {
+          "id": ["1188460"],
+          "title": "geaca de puf barbati, culoarea negru, de iarna",
+          "brand": ["Tommy Jeans"],
+          "price": 1299.0,
+          "availability": 0,
+          "image_link": ["https://img2.ans-media.com/i/356x473/AW26-KUM0OL_99X_F1.jpg"]
+        },
+        "type": "product",
+        "exact": true
+      },
+      {
+        "url": "/p/tommy-jeans-sneakers-din-piele-1210001.html",
+        "attributes": {"title": "Sneakers din piele", "brand": ["Tommy Jeans"], "price_amount": 1.249e3},
+        "type": "product"
+      },
+      {
+        "url": "/c/tommy-jeans-barbati-4521",
+        "attributes": {"title": "Categorie - Tommy Jeans - Bărbați"},
+        "type": "category"
+      },
+      {
+        "url": "/p/tommy-jeans-sapca-1210002.html",
+        "attributes": {"title": "Sapca", "brand": ["Tommy Jeans"]},
+        "type": "product"
+      }
+    ],
+    "quicksearch_hits": [],
+    "facets": [],
+    "total_hits": 3,
+    "offset": "0"
+  },
+  "next_page": null,
+  "guid": "0b9a8c56-3a7e-4b8b-9b8e-6c1b7f2d9e11"
+}

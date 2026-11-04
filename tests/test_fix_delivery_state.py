@@ -357,6 +357,16 @@ def test_store_health_rewarn_cooldown_and_recovery_only_after_warning():
     cycle(False)
     assert "Снова работают" in health_msgs()[-1]
 
+    # a long outage that starts inside the cooldown is still reported once the cooldown is over
+    for _ in range(3):
+        cycle(True)
+    assert len(health_msgs()) == 4
+    e.state.data["stores"]["fake"]["alerted_at"] -= 25 * 3600
+    cycle(True)
+    assert len(health_msgs()) == 5 and "не отвечают" in health_msgs()[-1]
+    cycle(True)
+    assert len(health_msgs()) == 5
+
     # state written by the old code: alerted=True meant "warning sent" -> recovery is still announced
     e.state.data["stores"]["fake"] = {"ok": 1, "fail": 9, "cf": 9, "alerted": True}
     tg.messages.clear()

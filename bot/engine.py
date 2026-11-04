@@ -349,7 +349,8 @@ class Engine:
                     for a in new_alerts:
                         self.state.mark_notified(a)  # do not re-announce everything one by one later
                     summary["alerts"] += min(len(new_alerts), top_n)
-                    rest = [a for a in alerts if a not in new_alerts]
+                    sent_ids = {id(a) for a in new_alerts}
+                    rest = [a for a in alerts if id(a) not in sent_ids]
                 else:
                     rest = alerts  # not delivered (Telegram down, no chat bound yet): the next run builds it again
                 for a in rest:
@@ -409,12 +410,13 @@ class Engine:
                                     if q not in r.skipped and not v.startswith("skipped (")}))[:300]
             h = self.state.store_result(k, not failed, err, sum(len(v) for v in r.results.values()))
             name = self.store_names.get(k, k)
-            if failed and h["cf"] >= threshold and not h.get("alerted"):
+            if failed and h["cf"] >= threshold and not _warned(h):
                 if ts - float(h.get("alerted_at") or 0) >= WARN_COOLDOWN:
                     any_blocked = any_blocked or r.blocked
                     down.append((h, f"• <b>{esc(name)}</b> — {h['cf']} проверок подряд: <code>{esc(err[:120])}</code>"))
                 else:
-                    # warned less than 24 h ago and it flapped back: stay quiet, and quiet on recovery too
+                    # warned less than 24 h ago and it flapped back: stay quiet (also on recovery) until the
+                    # cooldown is over; if it is still down then, the warning goes out
                     h["alerted"] = True
                     h["warned"] = False
             elif not failed and h.get("alerted"):
@@ -453,7 +455,7 @@ class Engine:
                         err = r.cause
                 h = self.state.url_result(w.id, u, ok, err)
                 n = index.get(w.id, "N")
-                if not ok and h["cf"] >= threshold and not h.get("alerted"):
+                if not ok and h["cf"] >= threshold and not _warned(h):
                     if ts - float(h.get("alerted_at") or 0) < WARN_COOLDOWN:
                         h.update(alerted=True, warned=False)
                         continue
@@ -495,6 +497,11 @@ class Engine:
             print("---- [no chat bound yet: will be sent after /start] ----\n" + text)
             return False
         return res is not False   # Telegram.send returns a bool; a None from older fakes counts as delivered
+
+
+def _warned(h: dict) -> bool:
+    """A warning was sent for the current failure streak (old state files: alerted alone meant that)."""
+    return bool(h.get("alerted")) and bool(h.get("warned", True))
 
 
 def _watch_to_spec(w: Watch) -> dict:

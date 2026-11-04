@@ -11,13 +11,16 @@ Strategies, in order of reliability:
 """
 from __future__ import annotations
 
+import itertools
 import json
 import logging
 import re
+import unicodedata
 from typing import Any, Iterable, Iterator, Optional
-from urllib.parse import unquote, urldefrag, urljoin, urlsplit
+from urllib.parse import parse_qsl, unquote, urldefrag, urlencode, urljoin, urlsplit
 
 from bs4 import BeautifulSoup, Tag
+from bs4.element import PreformattedString
 
 from .models import Offer, canonical_url
 from .prices import PRICE_WITH_CURRENCY_RE, element_price_text, parse_price
@@ -479,14 +482,28 @@ _NOT_PRICE_CONTEXT = re.compile(
 # /cartuse-... (cartridges) and /cosmetice/... are product links, and /p/1#reviews is the product itself.
 _SKIP_LINK = re.compile(
     r"^\s*(?:#|javascript:|mailto:|tel:|sms:|whatsapp:)"
-    r"|/(?:cos|cart|checkout|login|wishlist|compare|favorites?)(?:[/?#]|$)"
-    r"|[?&](?:add[-_]?to[-_]?cart|add_to_wishlist|wishlist|compare)=",
+    r"|/(?:cos|cart|checkout|login|wishlist|compare|favorites?|cos-de-cumparaturi|cosul-meu)(?:[/?#]|$)"
+    r"|add[-_]?to[-_]?cart|adauga[-_]?in[-_]?cos"
+    r"|[?&](?:add_to_wishlist|wishlist|compare)=",
     re.I,
 )
+# link texts that are cart actions (the link is never the product link) / calls to action (never a title)
+_CART_TEXT_RE = re.compile(r"^(?:adauga (?:in|la) cos\w*|cumpara(?: acum)?|add to (?:cart|bag)|buy(?: now)?|in cos)$")
+_NOT_TITLE_RE = re.compile(
+    r"^(?:vezi\b.*|detalii\b.*|mai multe\b.*|info|compara\b.*|citeste\b.*|toate ofertele|adauga la \w+.*"
+    r"|\(?\d+\)?(?: (?:review|recenzi|oferte|magazine|pareri)\S*)?)$")
+# "1.258,00 Lei / 100 ml", "37,58 lei / l", "12,99 lei/buc": a unit price, not the product's price
+_UNIT_AFTER_RE = re.compile(
+    r"\s*/\s*(?:\d+(?:[.,]\d+)?\s*)?(?:ml|cl|l|litr[ui]|kg|g|gr|buc|bucat[aă]|mp|m2|m²|m|metru|doz[aă]|spal[aă]ri|capsul[aă])\b",
+    re.I)
+_NAME_CLASS_WORDS = frozenset({"title", "name", "titlu", "nume", "denumire"})
+# product links whose identity is in the query string (Jump.php?id=..., index.php?route=product&product_id=...)
+_SCRIPT_PATH_RE = re.compile(r"\.(?:php|aspx?|jsp|cgi|pl|do)$|^/?$", re.I)
+_TRACKING_PARAM_RE = re.compile(r"^(?:utm_\w*|gclid|fbclid|yclid|ref\w*|src|source|gtm\w*|from|list|pos(?:ition)?|sr|mc_\w*|_ga)$", re.I)
 _NON_CONTENT_TAGS = frozenset({"script", "style", "option", "title", "noscript", "template", "select", "textarea"})
 _CURRENCY_WORD_RE = re.compile(r"(?<![^\W\d_])(?:lei|ron)\b", re.I)    # "lei" not glued to a letter
 _PRICE_TEXT_MAX = 80                                                    # a price element's text is short
-_SPLIT_PREFIX_RE = re.compile(r"[\d\s.,]+")
+_SPLIT_PREFIX_RE = re.compile(r"[\d\s.,]*\d[\d\s.,]*")
 
 # Old-price detection by class: class tokens are split into words on '-', '_' and camelCase boundaries, so
 # 'font-bold' / 'price-holder' / 'product-list-item' are not old prices, while 'product-old-price',
@@ -531,7 +548,24 @@ def _short_price_text(el: Tag) -> Optional[str]:
 
 
 def _price_seed(s: Any) -> bool:
-    return bool(s) and bool(_CURRENCY_WORD_RE.search(s))
+    # PreformattedString: comments, CDATA, doctype - never visible prices
+    return bool(s) and not isinstance(s, PreformattedString) and bool(_CURRENCY_WORD_RE.search(s))
+
+
+def _widen_split(el: Tag, root: Tag) -> Optional[tuple[Tag, Optional[float], str]]:
+    """'99 Lei' whose integer part sits in a sibling element ("<span>2.599</span><span>99 Lei</span>"):
+    the ancestor whose text is only digits/separators plus this text holds the whole price."""
+    up, res = el, None
+    for _ in range(2):
+        if up is root or not isinstance(up.parent, Tag) or up.parent.name in ("body", "html", "[document]"):
+            break
+        inner = element_price_text(up)
+        outer = _short_price_text(up.parent)
+        if not outer or not outer.endswith(inner) or not _SPLIT_PREFIX_RE.fullmatch(outer[:-len(inner)]):
+            break
+        up = up.parent
+        res = (up, parse_price(outer), outer)
+    return res
 
 
 def _price_elements(root: Tag) -> Iterator[tuple[Tag, float, str]]:
@@ -554,17 +588,7 @@ def _price_elements(root: Tag) -> Iterator[tuple[Tag, float, str]]:
             matches = list(PRICE_WITH_CURRENCY_RE.finditer(text))
             if len(matches) == 1:
                 value, ctx = parse_price(matches[0].group(0)), par.get_text(" ", strip=True)
-                # integer part in a sibling element: "<span>2.599</span><span>99 Lei</span>"
-                up = par
-                for _ in range(2):
-                    if up is root or not isinstance(up.parent, Tag) or up.parent.name in ("body", "html"):
-                        break
-                    inner = element_price_text(up)
-                    outer = _short_price_text(up.parent)
-                    if not outer or not outer.endswith(inner) or not _SPLIT_PREFIX_RE.fullmatch(outer[:-len(inner)]):
-                        break
-                    up = up.parent
-                    el, value, ctx = up, parse_price(outer), outer
+                el, value, ctx = _widen_split(par, root) or (el, value, ctx)
             else:  # old and new price in one parent: this text node's own price
                 value, ctx = parse_price(str(tn)), " ".join(str(tn).split())
         else:  # currency alone ("Lei", ",99 lei"): the digits are in sibling elements
@@ -576,7 +600,7 @@ def _price_elements(root: Tag) -> Iterator[tuple[Tag, float, str]]:
                 if text is None:
                     break
                 if PRICE_WITH_CURRENCY_RE.search(text):
-                    el, value, ctx = cand, parse_price(text), text
+                    el, value, ctx = _widen_split(cand, root) or (cand, parse_price(text), text)
                     break
                 if cand is root:
                     break
@@ -587,33 +611,76 @@ def _price_elements(root: Tag) -> Iterator[tuple[Tag, float, str]]:
         yield el, value, ctx
 
 
+def _fold(text: str) -> str:
+    """Lower case, no diacritics, single spaces: 'Adaugă în coș' -> 'adauga in cos'."""
+    t = unicodedata.normalize("NFKD", text.lower())
+    return " ".join("".join(c for c in t if not unicodedata.combining(c)).split())
+
+
+def _has_name_class(tag: Tag) -> bool:
+    return any(w.lower() in _NAME_CLASS_WORDS for c in (tag.get("class") or []) for w in _CLASS_WORD_SPLIT.split(c))
+
+
+_HEADING_RE = re.compile(r"^h[1-6]$")
+
+
+def _name_elements(root: Tag, limit: int = 0) -> list[Tag]:
+    """Headings and elements with a title / name class ('product-card-title', 'productName') under root."""
+    out = [t for t in root.find_all(True) if _HEADING_RE.match(t.name) or _has_name_class(t)]
+    return out[:limit] if limit else out
+
+
+def _is_unit_price(ctx: str, value: float) -> bool:
+    for m in PRICE_WITH_CURRENCY_RE.finditer(ctx):
+        if parse_price(m.group(0)) == value:
+            return bool(_UNIT_AFTER_RE.match(ctx, m.end()))
+    return False
+
+
 def _anchor_texts(a: Tag) -> list[str]:
     out = [a.get("title") or "", a.get("aria-label") or ""]
-    out.extend(h.get_text(" ", strip=True) for h in a.find_all(re.compile(r"^h[1-6]$")))
+    out.extend(t.get_text(" ", strip=True) for t in _name_elements(a))
     out.append(a.get_text(" ", strip=True))
     out.extend((img.get("alt") or img.get("title") or "") for img in a.find_all("img"))
     return [" ".join(str(t).split()) for t in out if t and str(t).strip()]
 
 
+def _usable_title(text: str) -> bool:
+    return len(text) <= 300 and not PRICE_WITH_CURRENCY_RE.search(text) and not _NOT_TITLE_RE.match(_fold(text))
+
+
 def _best_title(anchors: list[Tag], container: Tag) -> str:
-    """Longest name among the product's links (title attribute, heading, link text, image alt); a heading
-    of the card when the links carry no usable name ("Vezi produs")."""
+    """Longest name among the product's links (title attribute, heading / name element, link text, image
+    alt), never a call to action ("Vezi detalii", "Compară prețuri"); a heading or name element of the card
+    when the links carry no usable name."""
     cands = [t for a in anchors for t in _anchor_texts(a)]
-    clean = [t for t in cands if len(t) <= 300 and not PRICE_WITH_CURRENCY_RE.search(t)]
-    best = max(clean or cands, key=len, default="")
+    best = max((t for t in cands if _usable_title(t)), key=len, default="")
     if len(best) < 12:
-        heads = [" ".join(h.get_text(" ", strip=True).split()) for h in container.find_all(re.compile(r"^h[1-6]$"), limit=3)]
-        heads = [h for h in heads if h and len(h) <= 300 and not PRICE_WITH_CURRENCY_RE.search(h)]
-        best = max([best, *heads], key=len)
+        heads = [" ".join(h.get_text(" ", strip=True).split()) for h in _name_elements(container, limit=6)]
+        best = max([best, *(h for h in heads if h and _usable_title(h))], key=len)
     return best
+
+
+def _link_key(url: str) -> str:
+    """canonical_url, plus the non-tracking query for script URLs whose query names the product."""
+    key = canonical_url(url)
+    try:
+        p = urlsplit(url)
+    except ValueError:
+        return key
+    if p.query and _SCRIPT_PATH_RE.search(p.path):
+        q = sorted((k, v) for k, v in parse_qsl(p.query, keep_blank_values=True) if not _TRACKING_PARAM_RE.match(k))
+        if q:
+            key += "?" + urlencode(q)
+    return key
 
 
 def _link_groups(node: Tag, base_url: str, page_key: str, stop_after: int = 0) -> dict[str, list[Tag]]:
     """Product-link candidates under node (node itself when it is a link), grouped by canonical URL.
     With stop_after=N, scanning stops as soon as more than N distinct URLs were seen."""
-    anchors = node.find_all("a", href=True)
+    anchors = (t for t in node.descendants if isinstance(t, Tag) and t.name == "a" and t.has_attr("href"))
     if node.name == "a" and node.has_attr("href"):
-        anchors.insert(0, node)
+        anchors = itertools.chain([node], anchors)
     groups: dict[str, list[Tag]] = {}
     for a in anchors:
         href = str(a.get("href") or "").strip()
@@ -622,8 +689,10 @@ def _link_groups(node: Tag, base_url: str, page_key: str, stop_after: int = 0) -
         url = urljoin(base_url, href)
         if not url.lower().startswith(("http://", "https://")):
             continue
-        key = canonical_url(url)
+        key = _link_key(url)
         if key == page_key:          # back to this listing (sort, paging, "?add=..." buttons)
+            continue
+        if _CART_TEXT_RE.match(_fold(a.get_text(" ", strip=True) or str(a.get("title") or ""))):
             continue
         groups.setdefault(key, []).append(a)
         if stop_after and len(groups) > stop_after:
@@ -631,11 +700,16 @@ def _link_groups(node: Tag, base_url: str, page_key: str, stop_after: int = 0) -
     return groups
 
 
-def _dominant_link(node: Tag, base_url: str, page_key: str) -> Optional[tuple[str, list[Tag]]]:
+_MAX_CARD_LINKS = 4      # a card links its product and maybe a brand / seller / shop / "Info" page
+
+
+def _dominant_link(groups: dict[str, list[Tag]]) -> Optional[tuple[str, list[Tag]]]:
     """A card whose links go to several URLs (product + brand / seller / category link): the one URL whose
     link has a real name (>= 12 chars), else the one URL with an image link."""
-    groups = _link_groups(node, base_url, page_key)
-    named = [k for k, anchors in groups.items() if any(len(t) >= 12 for a in anchors for t in _anchor_texts(a))]
+    if len(groups) > _MAX_CARD_LINKS:      # a block of many links (menu, footer, the whole grid) is not one card
+        return None
+    named = [k for k, anchors in groups.items()
+             if any(len(t) >= 12 and _usable_title(t) for a in anchors for t in _anchor_texts(a))]
     if len(named) == 1:
         return named[0], groups[named[0]]
     if not named:
@@ -648,24 +722,31 @@ def _dominant_link(node: Tag, base_url: str, page_key: str) -> Optional[tuple[st
 def _card_for(el: Tag, base_url: str, page_key: str) -> Optional[tuple[Tag, str, list[Tag]]]:
     """Climb from a price element to the container of exactly one product: (container, url key, links).
 
-    Climbing stops at the first container whose links point to more than one product URL: above that
-    level the price could be attached to a neighbouring card's product."""
+    The container is never a level whose links point to more than one product URL: there the price could
+    belong to a neighbouring card's product. Above the container the climb only looks for a better name
+    of the same product (a card that also links a shop / brand / "Info" page)."""
     node: Any = el
     best: Optional[tuple[Tag, str, list[Tag]]] = None
     for _ in range(8):
         if not isinstance(node, Tag) or node.name in ("body", "html", "[document]"):
             break
-        groups = _link_groups(node, base_url, page_key, stop_after=1)
-        if len(groups) > 1:
-            if best is None:   # the first level with links already has several: card with extra links
-                dom = _dominant_link(node, base_url, page_key)
-                if dom:
-                    best = (node, dom[0], dom[1])
-            break
-        if groups:
+        groups = _link_groups(node, base_url, page_key, stop_after=_MAX_CARD_LINKS)
+        if len(groups) == 1:
             (key, anchors), = groups.items()
             best = (node, key, anchors)
             if len(_best_title(anchors, node)) >= 12:
+                break
+        elif len(groups) > 1:
+            dom = _dominant_link(groups)
+            if best is None:   # the first level with links already has several: card with extra links
+                if dom:
+                    best = (node, dom[0], dom[1])
+                break
+            if dom:
+                if dom[0] == best[1]:   # same product, named better one level up: keep the inner container
+                    best = (best[0], best[1], dom[1])
+                break
+            if len(groups) > _MAX_CARD_LINKS or len(_best_title(best[2], best[0])) >= 12:
                 break
         node = node.parent
     return best
@@ -675,8 +756,10 @@ def heuristic_cards(soup: BeautifulSoup, base_url: str, store: str, min_cards: i
     """Find repeated containers with a product link and a 'NNN lei' price."""
     found: dict[str, Offer] = {}
     seen_containers: set[int] = set()
-    page_key = canonical_url(base_url)
-    for el, _, _ in _price_elements(soup):
+    page_key = _link_key(base_url)
+    for el, _, ctx in _price_elements(soup):
+        if _NOT_PRICE_CONTEXT.search(ctx):   # "208 lei/luna", "livrare gratuita peste 200 lei": not a card price
+            continue
         card = _card_for(el, base_url, page_key)
         if card is None:
             continue
@@ -690,10 +773,15 @@ def heuristic_cards(soup: BeautifulSoup, base_url: str, store: str, min_cards: i
         # prices inside this container
         cur: list[float] = []
         old: list[float] = []
+        units: list[float] = []
         for par, p, ctx in _price_elements(container):
             if _NOT_PRICE_CONTEXT.search(ctx):
                 continue
+            if _is_unit_price(ctx, p):
+                units.append(p)
+                continue
             (old if _is_old_price_node(par, stop=container) else cur).append(p)
+        cur = cur or units[:1]       # goods sold by length / area show only a unit price
         if not cur:
             continue
         price = cur[0]
@@ -772,11 +860,10 @@ def _ld_page_products(soup: BeautifulSoup) -> tuple[list[dict], bool]:
             out.append(obj)
         elif "itemlist" in types or "offercatalog" in types:
             has_list = has_list or bool(obj.get("itemListElement"))
-        else:
-            for k in ("mainEntity", "mainEntityOfPage"):
-                ent = obj.get(k)
-                if isinstance(ent, dict) and _types(ent) & {"product", "productgroup"}:
-                    out.append(ent)
+        else:  # WebPage / ItemPage {"mainEntity": {"@type": "Product", ...}}
+            ent = obj.get("mainEntity")
+            if isinstance(ent, dict) and _types(ent) & {"product", "productgroup"}:
+                out.append(ent)
     return out, has_list
 
 
@@ -796,7 +883,7 @@ def _ld_urls(obj: dict, *keys: str) -> list[str]:
 def _same_page(a: str, b: str) -> bool:
     """Same URL including the query (Shopify-style ?variant=...)."""
     try:
-        return canonical_url(a) == canonical_url(b) and urlsplit(a).query == urlsplit(b).query
+        return _page_key(a, a) == _page_key(b, b) and urlsplit(a).query == urlsplit(b).query
     except ValueError:
         return False
 

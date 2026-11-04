@@ -60,7 +60,7 @@ class AboutYouStore(Store):
     enabled_by_default = False
     page_size = 40
     min_delay = 4.0
-    extra_headers = {"Referer": "https://www.aboutyou.ro/", "Origin": "https://www.aboutyou.ro"}
+    extra_headers = {"Referer": "https://www.aboutyou.ro/"}
 
     def shop_id(self) -> Optional[str]:
         env = norm(os.environ.get(SHOP_ENV))
@@ -95,7 +95,8 @@ class AboutYouStore(Store):
         if not sid:
             self.last_strategy = "bapi:no-shop-id"
             return []
-        data = self.get_json(self.search_url(query, sid, page), headers={"Accept": "application/json"})
+        data = self.get_json(self.search_url(query, sid, page),
+                             headers={"Accept": "application/json", "Origin": "https://www.aboutyou.ro"})
         entities = data.get("entities") if isinstance(data, dict) else None
         out = dedupe(self._entity(e) for e in entities or [] if isinstance(e, dict))
         self.last_strategy = "bapi"

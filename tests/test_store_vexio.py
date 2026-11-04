@@ -3,6 +3,7 @@ import os
 import pytest
 
 from bot.net import BlockedError, Response
+from bot.stores import vexio as vexio_mod
 from bot.stores.vexio import VexioStore
 from tests.conftest import FakeHttp, make_store
 
@@ -14,20 +15,27 @@ HOME = ('<html><head><title>Vexio</title></head><body>'
         '<input type="text" name="keyword" placeholder="Cauta produse"></form></body></html>')
 
 
+def _reset():
+    VexioStore._route = None
+    VexioStore._probed = False
+    VexioStore._tracker = None
+    VexioStore._tracker_at = 0.0
+    VexioStore._lb_type = None
+
+
 @pytest.fixture(autouse=True)
-def _reset_route_cache():
-    VexioStore._route = None
-    VexioStore._probed = False
+def _reset_route_cache(monkeypatch):
+    monkeypatch.delenv(vexio_mod.TRACKER_ENV, raising=False)
+    _reset()
     yield
-    VexioStore._route = None
-    VexioStore._probed = False
+    _reset()
 
 
 def test_vexio_primary_route_parsing():
-    http = FakeHttp({"vexio.ro/cauta/?q=": HTML})
+    http = FakeHttp({"vexio.ro/search/?q=": HTML})
     store = make_store(VexioStore, http)
     offers = store.search("samsung galaxy")
-    assert http.calls == ["https://www.vexio.ro/cauta/?q=samsung+galaxy"]
+    assert http.calls == ["https://www.vexio.ro/search/?q=samsung+galaxy"]
     by = {o.offer_id: o for o in offers}
     assert list(by) == ["165432", "170210", "168801"]                    # "Pret la cerere" card skipped
     a = by["165432"]
@@ -39,7 +47,7 @@ def test_vexio_primary_route_parsing():
     assert b.image == "https://www.vexio.ro/images/products/170210/thumb.jpg"    # data-src over lazy.gif
     c = by["168801"]                                                        # no heading: a.text-center[title]
     assert c.title == "Smartwatch Samsung Galaxy Watch7, 44mm, LTE, Green" and c.in_stock is False
-    assert VexioStore._route == "https://www.vexio.ro/cauta/?q={q}"
+    assert VexioStore._route == "https://www.vexio.ro/search/?q={q}"
 
 
 def test_vexio_struck_first_strong_does_not_drop_the_card():
@@ -47,16 +55,16 @@ def test_vexio_struck_first_strong_does_not_drop_the_card():
             'gaming-x/">Placa video MSI GeForce RTX 4070 Gaming X Slim 12GB</a></h2><div class="price clearfix">'
             '<div class="pull-left"><strong><del>3.299,99 lei</del></strong></div>'
             '<div class="pull-left"><strong>2.799,99 lei</strong></div></div></article></body></html>')
-    o = make_store(VexioStore, FakeHttp({"vexio.ro/cauta/?q=": page})).search("rtx 4070")[0]
+    o = make_store(VexioStore, FakeHttp({"vexio.ro/search/?q=": page})).search("rtx 4070")[0]
     assert (o.price, o.old_price, o.offer_id) == (2799.99, 3299.99, "171234")
 
 
 def test_vexio_discovers_home_page_form_when_guess_404s():
-    http = FakeHttp({"vexio.ro/cauta/?q=": (404, "<html>Pagina nu a fost gasita</html>"),
+    http = FakeHttp({"vexio.ro/search/?q=": (404, "<html>Pagina nu a fost gasita</html>"),
                      "vexio.ro/cautare/?": HTML, "https://www.vexio.ro/": HOME})
     store = make_store(VexioStore, http)
     assert len(store.search("samsung galaxy")) == 3
-    assert http.calls == ["https://www.vexio.ro/cauta/?q=samsung+galaxy", "https://www.vexio.ro/",
+    assert http.calls == ["https://www.vexio.ro/search/?q=samsung+galaxy", "https://www.vexio.ro/",
                           "https://www.vexio.ro/cautare/?submit_search=1&keyword=samsung+galaxy"]
     http.calls.clear()
     make_store(VexioStore, http).search("galaxy s24")                    # route remembered for the process
@@ -64,17 +72,17 @@ def test_vexio_discovers_home_page_form_when_guess_404s():
 
 
 def test_vexio_other_guesses_then_generic_fallback():
-    http = FakeHttp({"vexio.ro/cauta/?q=": (404, "nf"), "vexio.ro/cauta/?search=": HTML,
+    http = FakeHttp({"vexio.ro/search/?q=": (404, "nf"), "vexio.ro/cauta/?q=": HTML,
                      "https://www.vexio.ro/": "<html><body>no form</body></html>"})
     assert len(make_store(VexioStore, http).search("samsung galaxy")) == 3
-    assert http.calls[-1] == "https://www.vexio.ro/cauta/?search=samsung+galaxy"
-    assert VexioStore._route == "https://www.vexio.ro/cauta/?search={q}"
+    assert http.calls[-1] == "https://www.vexio.ro/cauta/?q=samsung+galaxy"
+    assert VexioStore._route == "https://www.vexio.ro/cauta/?q={q}"
 
 
 def test_vexio_search_page_without_cards_and_block():
     page = ('<html><head><title>Rezultate cautare: qwerty | Vexio</title></head><body>'
             '<input type="search" name="q" value="qwerty"><p>Nu am gasit produse.</p></body></html>')
-    http = FakeHttp({"vexio.ro/cauta/?q=": page})
+    http = FakeHttp({"vexio.ro/search/?q=": page})
     store = make_store(VexioStore, http)
     assert store.search("qwerty") == [] and len(http.calls) == 1 and store.last_strategy == "no-results"
     with pytest.raises(BlockedError):                                     # Cloudflare 403: no route probing
@@ -98,14 +106,14 @@ def test_vexio_redirect_to_home_is_neither_parsed_nor_remembered():
     # the home page also renders article.product-box promotions: a guessed route that redirects there must not
     # turn them into "results", nor be cached as the working route
     home_with_promos = HTML.replace("Rezultate cautare: samsung galaxy", "Vexio - magazin online")
-    http = RedirectHttp({"vexio.ro/cauta/?q=": home_with_promos, "vexio.ro/cauta/?search=": HTML,
+    http = RedirectHttp({"vexio.ro/search/?q=": home_with_promos, "vexio.ro/cauta/?q=": HTML,
                          "https://www.vexio.ro/": "<html><body>no form</body></html>"},
-                        redirects={"/cauta/?q=": "https://www.vexio.ro/"})
+                        redirects={"/search/?q=": "https://www.vexio.ro/"})
     store = make_store(VexioStore, http)
     offers = store.search("samsung galaxy")
-    assert len(offers) == 3 and http.calls[-1] == "https://www.vexio.ro/cauta/?search=samsung+galaxy"
-    assert VexioStore._route == "https://www.vexio.ro/cauta/?search={q}"
-    VexioStore._route, VexioStore._probed = None, False
+    assert len(offers) == 3 and http.calls[-1] == "https://www.vexio.ro/cauta/?q=samsung+galaxy"
+    assert VexioStore._route == "https://www.vexio.ro/cauta/?q={q}"
+    _reset()
     every = RedirectHttp({"vexio.ro": home_with_promos}, redirects={"vexio.ro": "https://www.vexio.ro/"})
     store = make_store(VexioStore, every)
     assert store.search("samsung galaxy") == [] and store.last_strategy == "redirect:home"

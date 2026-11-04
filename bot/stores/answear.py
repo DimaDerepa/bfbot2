@@ -63,7 +63,7 @@ class AnswearStore(Store):
     categories = ("fashion",)
     page_size = 24
     min_delay = 2.0
-    extra_headers = {"Referer": "https://answear.ro/", "Origin": "https://answear.ro"}
+    extra_headers = {"Referer": "https://answear.ro/"}
 
     # ------------------------------------------------------------------ tracker id
     def tracker_id(self) -> Optional[str]:
@@ -103,7 +103,8 @@ class AnswearStore(Store):
             self.last_strategy = "luigisbox:no-tracker-id"
             return []
         data = self.get_json(self.search_url(query, tracker, page),
-                             headers={"Accept": "application/json", "Referer": "https://answear.ro/"})
+                             headers={"Accept": "application/json", "Referer": "https://answear.ro/",
+                                      "Origin": "https://answear.ro"})
         results = (data or {}).get("results") if isinstance(data, dict) else None
         hits = (results or {}).get("hits") if isinstance(results, dict) else None
         out = dedupe(self._hit(h) for h in hits or [] if isinstance(h, dict))

@@ -1,0 +1,6 @@
+{"results": [{"hits": [
+  {"objectID": "9876A-99X", "sku": "9876A-99X", "name": "Rochie midi cu mânecă lungă", "url": "https://www.sinsay.com/ro/ro/rochie-midi-cu-maneca-lunga-9876a-99x?utm=al",
+   "final_price": {"RON": 79.99}, "regular_price": {"RON": 99.99}, "image": "https://www.sinsay.com/media/catalog/product/9/8/9876A-99X-001.jpg", "in_stock": true},
+  {"objectID": "1234B-10X", "name": "Pulover tricotat", "url_key": "pulover-tricotat-1234b-10x", "price": "59,99 lei"},
+  {"objectID": "0000C-00X", "name": "Fără preț", "url": "/ro/ro/fara-pret-0000c-00x"}
+], "nbHits": 3, "page": 0, "hitsPerPage": 40}]}

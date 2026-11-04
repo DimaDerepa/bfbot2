@@ -157,6 +157,7 @@ NOT_PRICE_RE = re.compile(
     r"/\s*lun|\blunar|\bluna\b|\brate\b|\brat[aă]\b|economis|cashback|puncte|livrare|transport|garan|voucher|cupon",
     re.I,
 )
+_INSTALMENT_RE = re.compile(r"(?:lei|ron)\s*/\s*lun|\d\s*rate\b|\brate\s+(?:de|egale|f[aă]r[aă])\b|\bx\s*\d+\s*rate", re.I)
 _PERCENT_ONLY = re.compile(r"^[-–−]?\s*\d+(?:[.,]\d+)?\s*%$")
 # class tokens of a struck / list price; token-anchored so "fw-bold" is not "old"
 _OLD_TOKEN = re.compile(
@@ -300,7 +301,9 @@ def is_old_el(el) -> bool:
         return False
     if el.name in ("del", "s", "strike"):
         return True
-    if any(_OLD_TOKEN.search(c) for c in (el.get("class") or [])):
+    # state modifiers of the CURRENT price ("product-price with-list-price", "has-old-price") are not old prices
+    if any(_OLD_TOKEN.search(c) for c in (el.get("class") or [])
+           if not c.lower().startswith(("with-", "has-", "is-", "show-"))):
         return True
     tid = el.get("data-testid") or el.get("data-test") or ""
     if tid and _OLD_TESTID.search(tid):
@@ -362,7 +365,7 @@ def current_price(el) -> Optional[float]:
     for ch in drop:
         ch.extract()
     t = text_of(c)
-    if t and NOT_PRICE_RE.search(t) and not money_values(t):
+    if t and (_INSTALMENT_RE.search(t) or (NOT_PRICE_RE.search(t) and not money_values(t))):
         return None
     return el_price(c)
 
@@ -449,12 +452,12 @@ def stock_from_text(text: Any) -> Optional[bool]:
 _CF_MANAGED = re.compile(r"_cf_chl_opt|/cdn-cgi/challenge-platform/h/[a-z]+/orchestrate/|cf-chl-", re.I)
 _BLOCK_MARKERS = (
     "captcha-delivery.com", "geo.captcha-delivery", "sec-if-cpt-container", "/_sec/cp_challenge", "px-captcha",
-    "_incapsula_resource", "hcaptcha.com/1/api.js",
+    "_incapsula_resource",
 )
 _BLOCK_TITLES = (
     "just a moment", "attention required", "access denied", "checking your browser", "are you a robot",
     "verify you are human", "captcha", "security check", "request blocked", "pardon our interruption",
-    "robot check", "ddos-guard", "forbidden", "un moment", "verificare",
+    "robot check", "ddos-guard", "403 forbidden",
 )
 
 

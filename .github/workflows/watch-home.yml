@@ -1,0 +1,46 @@
+name: watch-home
+
+# Runs on YOUR computer (GitHub self-hosted runner) with a Romanian home IP, for the shops that block
+# GitHub's cloud (eMAG, PC Garage, evoMAG, CEL, compari.ro, ...). Enable it by creating the repository
+# variable HOME_RUNNER = true after installing the runner (see README). If the computer is off, the cloud
+# job keeps working for the other shops and these checks simply resume when it is back.
+on:
+  schedule:
+    - cron: "6-59/10 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: watch-home
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  home:
+    if: ${{ vars.HOME_RUNNER == 'true' }}
+    runs-on: self-hosted
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install
+        run: python -m pip install --disable-pip-version-check -q -r requirements.txt
+
+      - name: Load state
+        run: |
+          python -m bot.statesync load state state.json
+          python -m bot.statesync load state-home state-home.json
+
+      - name: Check prices (home shops)
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          BOT_MODE: home
+        run: python -m bot run --state state.json
+
+      - name: Save state
+        if: always()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python -m bot.statesync save state-home state-home.json
