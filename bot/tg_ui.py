@@ -305,19 +305,25 @@ class TelegramUI:
         from . import nlp_ru
 
         spec = None
+        extra_specs: list = []
         if not text.strip().lower().startswith(("http://", "https://")):
             from . import ai
 
             if ai.enabled():
                 parsed = ai.parse_requests(text)
-                if len(parsed) > 1:        # several products in one message -> one watch each
-                    made = [self._create_from_spec(ai.spec_from_ai(d, text)) for d in parsed[1:]]
-                    self._extra_created = made
                 if parsed:
                     spec = ai.spec_from_ai(parsed[0], text)
+                    extra_specs = [ai.spec_from_ai(d, text) for d in parsed[1:]]   # several products -> one watch each
         if spec is None:
             spec = nlp_ru.parse(text) if nlp_ru.looks_natural(text) else parse_watch_spec(text)
-        return self._create_from_spec(spec)
+        w = self._create_from_spec(spec)
+        self._extra_created = []
+        for x in extra_specs:
+            try:
+                self._extra_created.append(self._create_from_spec(x))
+            except ValueError:
+                pass
+        return w
 
     def _create_from_spec(self, spec: dict) -> Watch:
         if not spec.get("query") and not spec.get("urls"):
