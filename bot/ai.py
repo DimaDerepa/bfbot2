@@ -24,8 +24,39 @@ MAX_NEW_PER_WATCH = 200   # cap per run so a huge listing cannot run up the bill
 CATEGORIES = ["electronics", "pc", "appliances", "home", "fashion", "beauty", "diy", "toys", "sport", "books", "general"]
 
 
+PRICES = {   # USD per 1M tokens (input, output)
+    "claude-opus-5-5": (4.0, 20.0), "claude-sonnet-5-5": (2.0, 10.0), "claude-haiku-5-5": (0.10, 0.50),
+}
+USAGE = {"date": "", "usd": 0.0, "calls": 0}
+BUDGET = {"usd": 1.0}
+
+
+def _today() -> str:
+    return time.strftime("%Y-%m-%d", time.gmtime())
+
+
+def load_usage(state, budget_usd: float) -> None:
+    u = (state.data.get("ai_usage") or {}) if state is not None else {}
+    USAGE.update({"date": _today(), "usd": 0.0, "calls": 0})
+    if u.get("date") == _today():
+        USAGE.update({"usd": float(u.get("usd", 0.0)), "calls": int(u.get("calls", 0))})
+    BUDGET["usd"] = float(budget_usd or 0)
+
+
+def save_usage(state) -> None:
+    if state is not None and USAGE.get("date"):
+        state.data["ai_usage"] = dict(USAGE)
+
+
+def over_budget() -> bool:
+    if USAGE.get("date") != _today():
+        USAGE.update({"date": _today(), "usd": 0.0, "calls": 0})
+    return BUDGET["usd"] > 0 and USAGE["usd"] >= BUDGET["usd"]
+
+
 def enabled() -> bool:
-    return bool(os.environ.get("ANTHROPIC_API_KEY"))
+    """Claude available: key present and today's budget not used up."""
+    return bool(os.environ.get("ANTHROPIC_API_KEY")) and not over_budget()
 
 
 def _client():
@@ -53,6 +84,15 @@ def _json_call(model: str, system: str, user: str, schema: dict, max_tokens: int
     except anthropic.APIConnectionError as e:
         log.warning("claude API connection error: %s", e)
         return None
+    try:
+        u = resp.usage
+        pin, pout = PRICES.get(getattr(resp, "model", model), PRICES.get(model, (4.0, 20.0)))
+        tin = (u.input_tokens or 0) + (getattr(u, "cache_creation_input_tokens", 0) or 0) * 1.25 \
+            + (getattr(u, "cache_read_input_tokens", 0) or 0) * 0.1
+        USAGE["usd"] = round(USAGE.get("usd", 0.0) + tin * pin / 1e6 + (u.output_tokens or 0) * pout / 1e6, 4)
+        USAGE["calls"] = USAGE.get("calls", 0) + 1
+    except Exception:
+        pass
     if resp.stop_reason == "refusal":
         log.warning("claude refused: %s", getattr(resp, "stop_details", None))
         return None
@@ -197,6 +237,9 @@ def _requirements(w) -> str:
         parts.append("must NOT be / contain: " + ", ".join(w.exclude))
     if getattr(w, "notes", None):
         parts.append("Other: " + w.notes)
+    if getattr(w, "neg_examples", None):
+        parts.append("The user REJECTED these listings as not what they want (reject similar ones): "
+                     + " | ".join(w.neg_examples[-12:]))
     return "\n".join(parts)
 
 
@@ -252,7 +295,8 @@ GATE_SYSTEM = (
     "exclusions, price limits). Reject: accessories, spare parts, remotes, mounts, cables, cases, cleaning kits, "
     "services, warranties, bundles built around another product, wrong size/variant, refurbished/resigilat unless "
     "asked, and prices that are implausible for that product (far too low -> accessory/part/error/scam, or a fake "
-    "'old price'). When in doubt, reject. why: max 8 words."
+    "'old price'). If the user asked for a discount and the shop's 30-day low is shown, the deal must beat that 30-day "
+    "low by the requested percentage (an inflated 'old price' does not count). When in doubt, reject. why: max 8 words."
 )
 
 
@@ -286,7 +330,8 @@ def gate(state, w, offers: list) -> dict:
         lines = []
         for n, (_, o) in enumerate(chunk):
             old = f", old price {o.old_price:g}" if o.old_price else ""
-            lines.append(f"{n}. {o.title} | {o.price:g} RON{old} | shop {o.store} | {o.url}")
+            low = f", shop's 30-day low {o.low30:g}" if getattr(o, "low30", None) else ""
+            lines.append(f"{n}. {o.title} | {o.price:g} RON{old}{low} | shop {o.store} | {o.url}")
         data = _json_call(CLASSIFY_MODEL, GATE_SYSTEM, f"{req}\n\nListings:\n" + "\n".join(lines), GATE_SCHEMA, 8000, "low")
         if not data:
             break   # API trouble: fail open (the rule-based checks already passed these)

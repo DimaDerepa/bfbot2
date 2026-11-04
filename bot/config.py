@@ -36,6 +36,7 @@ class Settings:
     # shops that block GitHub's cloud: checked by the home runner (watch-home.yml) when HOME_RUNNER=true
     home_stores: list[str] = field(default_factory=lambda: [
         "emag", "pcgarage", "evomag", "cel", "forit", "vexio", "leroymerlin", "compari", "pricero"])
+    ai_daily_budget_usd: float = 1.0        # Claude spend cap per day; above it the rule-based filters take over
     dedupe_models: bool = True             # one model = one offer (the cheapest shop), others listed under it
     quiet_hours: Optional[str] = "23-8"    # Bucharest time: alerts still arrive, but without sound; null = always loud
     shops: list[dict] = field(default_factory=list)   # custom shops (platform adapters)
@@ -105,7 +106,7 @@ def watch_from_dict(d: dict, origin: str = "config", *, validate: bool = True) -
     for a, real in aliases.items():
         if a in d and real not in d:
             d[real] = d.pop(a)
-    for k in ("must_include", "any_of", "exclude", "urls", "skip_stores", "extra_queries"):
+    for k in ("must_include", "any_of", "exclude", "urls", "skip_stores", "extra_queries", "exclude_models", "neg_examples"):
         if k in d:
             d[k] = _as_list(d[k])
     for k in ("stores", "categories"):

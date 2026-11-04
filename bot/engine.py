@@ -317,6 +317,14 @@ class Engine:
                 continue
             if every > 1 and k in classes and run_no % every != 0 and not urls.get(k):
                 classes.pop(k)  # rate-limited store (e.g. behind a paid proxy): skip this run
+        # a shop that keeps blocking us is re-tried only every 4th run (~40 min) instead of wasting every run
+        health = self.state.data.get("stores", {})
+        warn_after = max(1, _setting(self.settings, "store_fail_alert_after", 6, int))
+        for k in list(classes):
+            h = health.get(k) or {}
+            if (h.get("cf") or 0) > max(6, warn_after) and "BLOCK" in str(h.get("last_error", "")).upper() \
+                    and run_no % 4 != 0 and not urls.get(k):
+                classes.pop(k)
         runs: dict[str, StoreRun] = {}
         self._fetch_deadline = time.monotonic() + float(self.fetch_budget)
         try:
@@ -373,6 +381,8 @@ class Engine:
             for o, check_title in candidates:
                 ref = self.state.reference_price(w, o)
                 v = judged.get(o.title) if check_title else None
+                if w.exclude_models and ((v or {}).get("model") or model_key(o.title)) in w.exclude_models:
+                    continue   # the user said "👎 не то" about this model
                 if v is None and check_title and w.ai and judged.get("__ai_on__"):
                     continue   # Claude-parsed watch: no verdict yet (API hiccup / per-run cap) -> next run
                 if v is not None:
@@ -403,11 +413,11 @@ class Engine:
                 alerts = [a for a in alerts if a.kind not in ("new", "rematch") or a in new_alerts]
                 if new_alerts:
                     msg = format_alerts(w.name, new_alerts[:top_n], self.store_names, digest=True,
-                                        total_matches=len(new_alerts))
+                                        total_matches=len(new_alerts), numbered=True)
                 else:
                     msg = (f"👀 <b>{esc(w.name)}</b>: сейчас подходящих предложений нет. "
                            f"Слежу ({len(store_keys) or len(w.urls)} источн.) и напишу, как только появятся.")
-                if self._send(msg):
+                if self._send(msg, inline=self._alert_buttons(w, new_alerts[:top_n])):
                     self.state.mark_initialized(w)
                     for a in new_alerts:
                         self.state.mark_notified(a)  # do not re-announce everything one by one later
@@ -426,10 +436,10 @@ class Engine:
                 alerts.sort(key=lambda a: a.offer.price)
                 alerts = self._gate(w, alerts, keep=limit)
                 send, rest = alerts[:limit], alerts[limit:]
-                msg = format_alerts(w.name, send, self.store_names)
+                msg = format_alerts(w.name, send, self.store_names, numbered=True)
                 if rest:
-                    msg += f"\n\n…и ещё {len(rest)} подходящих (дороже). Список: /top {w.id}"
-                if self._send(msg):
+                    msg += f"\n\n…и ещё {len(rest)} подходящих (дороже) — смотрите в приложении."
+                if self._send(msg, inline=self._alert_buttons(w, send)):
                     for a in alerts:
                         self.state.mark_notified(a)
                     self._commit_models(w, alerts)
@@ -538,6 +548,7 @@ class Engine:
         if not ai.enabled():   # with a key, Claude judges every watch (not only the ones it parsed)
             return {}
         titles = []
+        words = _search_words(w)
         for o, check_title in candidates:
             if not check_title:
                 continue
@@ -547,6 +558,8 @@ class Engine:
                 continue
             if w.in_stock and o.in_stock is False:
                 continue
+            if not _relevant(o.title, words):
+                continue        # shares no word with the searches (shops pad results with random items)
             titles.append(o.title)
         try:
             out = ai.verdicts(self.state, w, titles)
@@ -648,7 +661,29 @@ class Engine:
             self.state.data["notices"] = []
 
     # ------------------------------------------------------------------ delivery
-    def _send(self, text: str) -> bool:
+    def _alert_buttons(self, w: Watch, alerts: list) -> Optional[dict]:
+        """👎 per offer (never show this model again) + pause the watch. Refs live in the state for 10 days."""
+        import hashlib
+
+        if not alerts:
+            return None
+        refs = self.state.data.setdefault("alert_refs", {})
+        now_ts = int(time.time())
+        for k in [k for k, r in refs.items() if now_ts - r.get("ts", 0) > 10 * 86400]:
+            del refs[k]
+        btns = []
+        for i, a in enumerate(alerts[:12], 1):
+            tok = hashlib.sha1(f"{w.id}|{a.offer.key}".encode()).hexdigest()[:10]
+            rec = self.state.offers.get(self.state.rec_key(w, a.offer)) or {}
+            refs[tok] = {"w": w.id, "mk": getattr(a, "model_key", None) or rec.get("mk") or model_key(a.offer.title),
+                         "t": a.offer.title[:120], "ts": now_ts}
+            btns.append({"text": f"👎 {i}", "callback_data": f"ng:{tok}"})
+        rows = [btns[i:i + 4] for i in range(0, len(btns), 4)]
+        wh = hashlib.sha1(w.id.encode()).hexdigest()[:8]
+        rows.append([{"text": "⏸ Хватит, не следить", "callback_data": f"wp:{wh}"}])
+        return {"inline_keyboard": rows}
+
+    def _send(self, text: str, inline: Optional[dict] = None) -> bool:
         """Deliver a message. True only if it reached Telegram (or in dry-run mode); callers record
         "notified" / "initialized" / "warned" only on True, so a failed message is retried next run."""
         if self.dry_run:
@@ -659,9 +694,9 @@ class Engine:
             silent = in_quiet_hours(self.settings.quiet_hours)
         except Exception:  # never let the quiet-hours lookup stop a deal alert
             silent = False
-        markup = None
+        markup = inline
         factory = getattr(self, "markup_factory", None)
-        if factory:
+        if factory and markup is None:
             try:   # every message carries the up-to-date "⚙️ Управление" button
                 markup = factory()
             except Exception:
@@ -698,3 +733,24 @@ def _stored_watch(d: dict, origin: str) -> Watch:
         if "validate" not in str(e):   # config.watch_from_dict without the `validate` option
             raise
         return watch_from_dict(d, origin=origin)
+
+
+_STOP = {"de", "si", "cu", "pentru", "la", "din", "pe", "in", "the", "for", "with", "and", "gb", "tb", "ram"}
+
+
+def _search_words(w: Watch) -> set:
+    from .text import tokens
+
+    out = set()
+    for q in [w.query or "", *w.extra_queries, *w.any_of, *[m for m in w.must_include if not m.startswith("re:")]]:
+        out |= {t for t in tokens(q) if t not in _STOP and (len(t) >= 3 or any(c.isdigit() for c in t))}
+    return out
+
+
+def _relevant(title: str, words: set) -> bool:
+    from .text import tokens
+
+    if not words:
+        return True
+    tt = set(tokens(title))
+    return bool(tt & words) or any(wd in title.lower() for wd in words if len(wd) >= 4)

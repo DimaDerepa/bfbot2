@@ -260,18 +260,19 @@ function renderSettings() {
     </div>
     <div class="card"><div class="title">Состояние</div>
       <div class="shop"><span class="dot ${DATA.last_run ? "ok" : "new"}"></span><div class="grow">Последняя проверка<div class="muted">${ago(DATA.last_run)}${DATA.runs ? ` · всего ${DATA.runs}` : ""}</div></div></div>
-      <div class="shop"><span class="dot ${DATA.ai_on ? "ok" : "new"}"></span><div class="grow">Claude (умный разбор)<div class="muted">${DATA.ai_on ? "подключён" : "нет ключа ANTHROPIC_API_KEY в секретах GitHub"}</div></div></div>
+      <div class="shop"><span class="dot ${DATA.ai_on ? "ok" : "new"}"></span><div class="grow">Claude (умный разбор и проверка)<div class="muted">${DATA.ai_on ? "подключён · сегодня $" + (DATA.ai_usd || 0).toFixed(2) + " из $" + Number(c.budget ?? 1).toFixed(2) : "нет ключа ANTHROPIC_API_KEY в секретах GitHub"}</div></div></div>
+      <label class="f">Лимит расходов на Claude в день, $ (0 — без лимита)</label><input type="number" inputmode="decimal" id="budget" value="${c.budget ?? 1}">
       <div class="shop"><span class="dot ${DATA.home_on ? "ok" : "new"}"></span><div class="grow">Домашний компьютер<div class="muted">${DATA.home_on ? "подключён" : "не подключён"}</div></div></div>
     </div>`;
   const upd = () => {
     const on = $("#qOn").checked;
     cfgEdit.quiet = on ? `${parseInt($("#qA").value || 23)}-${parseInt($("#qB").value || 8)}` : "";
-    cfgEdit.drop = num($("#drop").value); cfgEdit.digest = num($("#digest").value); cfgEdit.dedupe = $("#dedupe").checked;
+    cfgEdit.drop = num($("#drop").value); cfgEdit.digest = num($("#digest").value); cfgEdit.dedupe = $("#dedupe").checked; cfgEdit.budget = $("#budget").value === "" ? null : Number($("#budget").value);
     const base = DATA.cfg || {};
     Object.keys(cfgEdit).forEach(k => { const b = k === "dedupe" ? base[k] !== false : base[k]; if (String(cfgEdit[k] ?? "") === String(b ?? "")) delete cfgEdit[k]; });
     refresh();
   };
-  ["#qOn", "#qA", "#qB", "#drop", "#digest", "#dedupe"].forEach(id => $(id).addEventListener(id === "#qOn" || id === "#dedupe" ? "change" : "input", () => { upd(); if (id === "#qOn") renderSettings(); }));
+  ["#qOn", "#qA", "#qB", "#drop", "#digest", "#dedupe", "#budget"].forEach(id => $(id).addEventListener(id === "#qOn" || id === "#dedupe" ? "change" : "input", () => { upd(); if (id === "#qOn") renderSettings(); }));
 }
 
 // ---------------------------------------------------------------- save

@@ -98,6 +98,7 @@ def _ai_reparse(state) -> None:
     from . import ai
     from .config import watch_from_dict
 
+    ai.load_usage(state, float((state.data.get("settings_overrides") or {}).get("ai_daily_budget_usd", 1.0)))
     if not ai.enabled():
         return
     redone = []
@@ -168,6 +169,9 @@ def cmd_run(args) -> int:
     # bot's pending commands), no replies, no alerts
     tg = Telegram(None) if args.dry_run else Telegram.from_env()
     engine = Engine(cfg, state, tg, dry_run=args.dry_run)
+    from . import ai as _ai
+
+    _ai.load_usage(state, getattr(engine.settings, "ai_daily_budget_usd", 1.0))
     if IMPORT_ERRORS:
         print("store import errors:", IMPORT_ERRORS, file=sys.stderr)
     cp = CommandProcessor(engine, mode="actions")
@@ -206,6 +210,7 @@ def cmd_run(args) -> int:
         if not home_mode:
             cp.poll(timeout=0)
     finally:
+        _ai.save_usage(state)
         if not home_mode:
             try:
                 state.data["app"] = cp.ui.webapp_snapshot()   # the Mini App reads this from the state branch

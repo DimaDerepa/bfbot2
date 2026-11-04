@@ -211,9 +211,9 @@ def store_label(store_key: str, store_names: dict[str, str], seller: Optional[st
     return f"{name} ({', '.join(extra)})" if extra else name
 
 
-def format_offer_line(a: Alert, store_names: dict[str, str]) -> str:
+def format_offer_line(a: Alert, store_names: dict[str, str], n: Optional[int] = None) -> str:
     o = a.offer
-    price = f"<b>{fmt_price(o.price)} лей</b>"
+    price = (f"{n}. " if n else "") + f"<b>{fmt_price(o.price)} лей</b>"
     if o.old_price and o.old_price > o.price:
         price += f" <s>{fmt_price(o.old_price)}</s>"
     if a.discount:
@@ -233,6 +233,9 @@ def format_offer_line(a: Alert, store_names: dict[str, str]) -> str:
         notes.append("наличие неизвестно")
     if "resigilat" in o.title.lower():
         notes.append("resigilat (вскрытая упаковка)")
+    low30 = getattr(o, "low30", None)
+    if low30 and o.old_price and low30 < o.old_price * 0.97:
+        notes.append(f"мин. цена в магазине за 30 дн.: {fmt_price(low30)}" + (" — не ниже её" if o.price >= low30 else ""))
     others = getattr(a, "others", None)
     if others:
         lines.append("<i>ещё: " + esc(" · ".join(f"{store_names.get(s, s)} {fmt_price(p)}" for p, s in others if p)) + "</i>")
@@ -242,7 +245,7 @@ def format_offer_line(a: Alert, store_names: dict[str, str]) -> str:
 
 
 def format_alerts(watch_name: str, alerts: list[Alert], store_names: dict[str, str],
-                  digest: bool = False, total_matches: int = 0) -> str:
+                  digest: bool = False, total_matches: int = 0, numbered: bool = False) -> str:
     if digest:
         head = f"🔎 <b>{esc(watch_name)}</b>: найдено {total_matches} подходящих предложений, самые дешёвые:"
     else:
@@ -251,5 +254,8 @@ def format_alerts(watch_name: str, alerts: list[Alert], store_names: dict[str, s
             head = f"📉 <b>{esc(watch_name)}</b>: цена снизилась"
         else:
             head = f"🔥 <b>{esc(watch_name)}</b>: {len(alerts)} нов. предложени{'е' if len(alerts) == 1 else 'я'}"
-    body = "\n\n".join(format_offer_line(a, store_names) for a in alerts)
+    body = "\n\n".join(format_offer_line(a, store_names, i if numbered and len(alerts) > 1 else None)
+                         for i, a in enumerate(alerts, 1))
+    if numbered:
+        body += "\n\n<i>👎 под номером — «не то», больше не покажу эту модель.</i>"
     return f"{head}\n\n{body}"

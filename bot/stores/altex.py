@@ -102,6 +102,7 @@ class AltexStore(Store):
             old_price=old if old and old > price else None, in_stock=stock,
             offer_id=str(sku) if sku else (str(p.get("id")) if p.get("id") else None),
             image=self._image(p), seller=seller, source="fenrir-api",
+            low30=parse_price(p.get("lowest_price")),
         )
 
     def product(self, url: str) -> Optional[Offer]:

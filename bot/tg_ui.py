@@ -35,6 +35,12 @@ MAIN_KB = {
 _APP_URL_CACHE: dict = {}
 
 
+def _ai_spent() -> float:
+    from . import ai
+
+    return float(ai.USAGE.get("usd", 0.0))
+
+
 def repo_slug() -> Optional[str]:
     import os
 
@@ -190,7 +196,9 @@ class TelegramUI:
                 "health": hs, "last_run": self.state.get("last_run"), "runs": self.state.get("runs"),
                 "home_on": home_on, "ai_on": bool(os.environ.get("ANTHROPIC_API_KEY")),
                 "cfg": {"quiet": getattr(st, "quiet_hours", None), "drop": getattr(st, "notify_drop_pct", 2),
-                        "digest": getattr(st, "first_run_digest", 8), "dedupe": bool(getattr(st, "dedupe_models", True))},
+                        "digest": getattr(st, "first_run_digest", 8), "dedupe": bool(getattr(st, "dedupe_models", True)),
+                        "budget": getattr(st, "ai_daily_budget_usd", 1.0)},
+                "ai_usd": _ai_spent(),
             })
         return snap
 
@@ -221,6 +229,8 @@ class TelegramUI:
                         ov["first_run_digest"] = max(1, min(30, int(c["digest"])))
                     if "dedupe" in c and c["dedupe"] is not None:
                         ov["dedupe_models"] = bool(c["dedupe"])
+                    if "budget" in c and c["budget"] is not None:
+                        ov["ai_daily_budget_usd"] = max(0.0, float(c["budget"]))
                     for k, v in ov.items():
                         if hasattr(self.engine.settings, k):
                             setattr(self.engine.settings, k, v)
@@ -508,11 +518,37 @@ class TelegramUI:
         msg = cq.get("message") or {}
         chat_id = str((msg.get("chat") or {}).get("id", ""))
         mid = msg.get("message_id")
-        self.tg.api("answerCallbackQuery", callback_query_id=cq.get("id"))
+        if not (data.startswith("ng:") or data.startswith("wp:")):
+            self.tg.api("answerCallbackQuery", callback_query_id=cq.get("id"))
         if not chat_id:
             return
         parts = data.split(":")
         act = parts[0]
+        if act == "ng" and len(parts) > 1:      # "👎 не то" under an alert
+            ref = (self.state.data.get("alert_refs") or {}).get(parts[1])
+            w = next((x for x in self.engine.all_watches() if ref and x.id == ref.get("w")), None)
+            if not ref or w is None:
+                self.tg.api("answerCallbackQuery", callback_query_id=cq.get("id"), text="Уже неактуально")
+                return
+            mk, title = ref.get("mk"), ref.get("t") or ""
+            try:
+                self._update(w, {"exclude_models": sorted(set(w.exclude_models) | {mk}) if mk else w.exclude_models,
+                                 "neg_examples": (w.neg_examples + [title])[-15:]})
+            except ValueError:
+                pass
+            for k, r in self.state.offers.items():   # drop it from the best-price lists right away
+                if k.startswith(w.id + "|") and r.get("mk") == mk:
+                    r["m"] = False
+            self.tg.api("answerCallbackQuery", callback_query_id=cq.get("id"),
+                        text="👌 Понял, эту модель больше не покажу и учту при проверке")
+            return
+        if act == "wp" and len(parts) > 1:      # "⏸ хватит" under an alert
+            w = self._find(parts[1])
+            if w is not None and w.enabled:
+                self.cp._set_enabled(w, False)
+            self.tg.api("answerCallbackQuery", callback_query_id=cq.get("id"),
+                        text="⏸ Больше не слежу за этим товаром (включить можно в приложении)")
+            return
         if act == "add":
             self._ask_new(chat_id)
             return

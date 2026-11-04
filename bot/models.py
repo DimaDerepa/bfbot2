@@ -29,6 +29,7 @@ class Offer:
     shop_count: Optional[int] = None    # aggregators: how many shops sell it
     store_name: Optional[str] = None    # display name (custom shops)
     source: str = ""                    # extraction strategy, for diagnostics
+    low30: Optional[float] = None       # shop's lowest price of the last 30 days (EU Omnibus), when published
 
     @property
     def key(self) -> str:
@@ -73,6 +74,8 @@ class Watch:
     storage_min: Optional[int] = None
     screen_inch: Optional[int] = None         # TVs / monitors / laptops: diagonal (from '55"', '139 cm', '55C61K')
     notes: Optional[str] = None               # other requirements for the AI judge
+    exclude_models: list[str] = field(default_factory=list)   # models the user marked "👎 не то"
+    neg_examples: list[str] = field(default_factory=list)     # their titles, shown to Claude as counter-examples
     origin: str = "config"                    # "config" | "telegram"
     id: str = ""
 
