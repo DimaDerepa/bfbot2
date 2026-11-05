@@ -4,13 +4,9 @@ permissions:
   contents: read
 jobs:
   probe:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - run: pip install -q curl_cffi beautifulsoup4
-      - shell: python {0}
+      - shell: '"C:\actions-runner\_work\_tool\python-embed-3.12\python.exe" {0}'
         run: |
           from curl_cffi import requests as r
           from bs4 import BeautifulSoup
@@ -22,6 +18,10 @@ jobs:
                   soup = BeautifulSoup(x.text, "html.parser")
                   forms = [(f.get("action"), [i.get("name") for i in f.find_all("input")]) for f in soup.find_all("form")][:4]
                   print(x.status_code, u, "->", x.url, len(x.text), "forms:", forms, "| title:", (soup.title.string if soup.title else "")[:80])
+                  if x.status_code == 200 and u.endswith("/"):
+                      print("   search-ish:", [ (a.get("action"), a.get("method")) for a in soup.select("form")], [i.attrs for i in soup.select("input[type=search], input[name=q], input[name=st]")][:3])
+                      import re as _re
+                      print("   js search hints:", sorted(set(_re.findall(r"https?://www\.compari\.ro/[a-zA-Z_./-]*\?[a-z]+=", x.text)))[:8], sorted(set(_re.findall(r"[\"'](/[a-zA-Z_./-]*search[a-zA-Z_./-]*)", x.text, _re.I)))[:8])
                   print("   product links:", len(soup.select("a[href*='-p']")), [a.get("href") for a in soup.select("a[href*='-p']")][:3])
               except Exception as e:
                   print("ERR", u, e)
