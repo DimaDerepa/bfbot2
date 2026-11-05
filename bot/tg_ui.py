@@ -38,7 +38,7 @@ _APP_URL_CACHE: dict = {}
 def _ai_spent() -> float:
     from . import ai
 
-    return float(ai.USAGE.get("usd", 0.0))
+    return float(ai.USAGE.get("usd", 0.0)) + float(ai.USAGE.get("other", 0.0))
 
 
 def repo_slug() -> Optional[str]:
@@ -72,6 +72,16 @@ FIELDS = {
     "year_min": ("📅 Год от", "Введите <b>минимальный год выпуска модели</b>, например <code>2025</code>.\n<code>0</code> — не важно."),
     "query": ("✏️ Что искать", "Напишите новый <b>поисковый запрос</b> латиницей, как на сайте магазина.\nНапример: <code>iphone 16 pro 256gb</code>"),
 }
+
+
+def _title_key(title: str) -> Optional[str]:
+    """Rule-based model key of a title, only when specific enough to exclude one model (has a model number)."""
+    from .specs import model_key
+
+    k = model_key(title) if title else ""
+    if k.startswith("code:") or (len(k.split()) >= 2 and any(c.isdigit() for c in k)):
+        return k
+    return None
 
 
 def _h(watch_id: str) -> str:
@@ -119,6 +129,7 @@ def _words(text: str) -> list[str]:
 class TelegramUI:
     BTN_APP_TEXT = BTN_APP
     _extra_created: list = []
+    _create_errors: list = []
     def __init__(self, cp) -> None:
         self.cp = cp
         self.engine = cp.engine
@@ -231,6 +242,9 @@ class TelegramUI:
                         ov["dedupe_models"] = bool(c["dedupe"])
                     if "budget" in c and c["budget"] is not None:
                         ov["ai_daily_budget_usd"] = max(0.0, float(c["budget"]))
+                        from . import ai as _ai
+
+                        _ai.set_budget(ov["ai_daily_budget_usd"])   # applies right away, not next run
                     for k, v in ov.items():
                         if hasattr(self.engine.settings, k):
                             setattr(self.engine.settings, k, v)
@@ -241,6 +255,7 @@ class TelegramUI:
                     w = self._create(str(op["text"]))
                     for x in [w, *self._extra_created]:
                         done.append(f"➕ {esc(x.name)} — {esc(x.describe())}")
+                    done.extend(f"⚠️ {m}" for m in self._create_errors)
                     continue
                 w = self._find(str(op.get("h") or ""))
                 if w is None:
@@ -328,14 +343,17 @@ class TelegramUI:
                     extra_specs = [ai.spec_from_ai(d, text) for d in parsed[1:]]   # several products -> one watch each
         if spec is None:
             spec = nlp_ru.parse(text) if nlp_ru.looks_natural(text) else parse_watch_spec(text)
-        w = self._create_from_spec(spec)
-        self._extra_created = []
-        for x in extra_specs:
+        created, errors = [], []
+        for x in [spec, *extra_specs]:   # one product already tracked must not drop the others
             try:
-                self._extra_created.append(self._create_from_spec(x))
-            except ValueError:
-                pass
-        return w
+                created.append(self._create_from_spec(x))
+            except ValueError as e:
+                errors.append(e)
+        if not created:
+            raise errors[0]
+        self._extra_created = created[1:]
+        self._create_errors = [str(e) for e in errors]
+        return created[0]
 
     def _create_from_spec(self, spec: dict) -> Watch:
         if not spec.get("query") and not spec.get("urls"):
@@ -471,6 +489,7 @@ class TelegramUI:
                 self._extra_created = []
                 w = self._create(text)
                 extra = "".join(f"\n✅ Добавлено: <b>{esc(x.name)}</b>\n{esc(x.describe())}" for x in self._extra_created)
+                extra += "".join(f"\n⚠️ {m}" for m in self._create_errors)
                 self.send(chat_id, f"✅ Добавлено: <b>{esc(w.name)}</b>\n{esc(w.describe())}{extra}\n\n"
                           "Первые результаты пришлю после ближайшей проверки. Условия можно поменять в приложении — "
                           f"кнопка «{BTN_APP}» внизу.", self.main_kb())
@@ -525,19 +544,21 @@ class TelegramUI:
         parts = data.split(":")
         act = parts[0]
         if act == "ng" and len(parts) > 1:      # "👎 не то" under an alert
-            ref = (self.state.data.get("alert_refs") or {}).get(parts[1])
+            ref = (self.state.data.get("alert_refs") or {}).get(parts[1]) \
+                or (self.state.data.get("peer_alert_refs") or {}).get(parts[1])   # alert sent by the home runner
             w = next((x for x in self.engine.all_watches() if ref and x.id == ref.get("w")), None)
             if not ref or w is None:
                 self.tg.api("answerCallbackQuery", callback_query_id=cq.get("id"), text="Уже неактуально")
                 return
             mk, title = ref.get("mk"), ref.get("t") or ""
+            keys = {k for k in (mk, _title_key(title)) if k}   # Claude's model id + the rule-based key (Claude off)
             try:
-                self._update(w, {"exclude_models": sorted(set(w.exclude_models) | {mk}) if mk else w.exclude_models,
+                self._update(w, {"exclude_models": sorted(set(w.exclude_models) | keys),
                                  "neg_examples": (w.neg_examples + [title])[-15:]})
             except ValueError:
                 pass
             for k, r in self.state.offers.items():   # drop it from the best-price lists right away
-                if k.startswith(w.id + "|") and r.get("mk") == mk:
+                if k.startswith(w.id + "|") and (r.get("mk") in keys or _title_key(r.get("t") or "") in keys):
                     r["m"] = False
             self.tg.api("answerCallbackQuery", callback_query_id=cq.get("id"),
                         text="👌 Понял, эту модель больше не покажу и учту при проверке")

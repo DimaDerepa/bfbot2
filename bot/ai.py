@@ -28,36 +28,74 @@ CATEGORIES = ["electronics", "pc", "appliances", "home", "fashion", "beauty", "d
 PRICES = {   # USD per 1M tokens (input, output)
     "claude-opus-5-5": (4.0, 20.0), "claude-sonnet-5-5": (2.0, 10.0), "claude-haiku-5-5": (0.10, 0.50),
 }
-USAGE = {"date": "", "usd": 0.0, "calls": 0}
+USAGE = {"date": "", "usd": 0.0, "calls": 0, "other": 0.0}   # other: today's spend of the other runner
 BUDGET = {"usd": 1.0}
+# API health in this process: a run stops calling Claude after repeated failures (no minutes of timeouts per watch)
+STATUS = {"ok": 0, "fail": 0, "streak": 0, "last_error": ""}
+TRIP_AFTER = 2
 
 
 def _today() -> str:
     return time.strftime("%Y-%m-%d", time.gmtime())
 
 
-def load_usage(state, budget_usd: float) -> None:
+def spent_today(usage) -> float:
+    """USD of a stored ai_usage record if it is from today."""
+    try:
+        return float(usage.get("usd", 0.0)) if isinstance(usage, dict) and usage.get("date") == _today() else 0.0
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def load_usage(state, budget_usd: float, other_usd: float = 0.0) -> None:
+    """other_usd: what the other runner (cloud / home PC) spent today; the daily budget covers both."""
     u = (state.data.get("ai_usage") or {}) if state is not None else {}
-    USAGE.update({"date": _today(), "usd": 0.0, "calls": 0})
+    USAGE.update({"date": _today(), "usd": 0.0, "calls": 0, "other": float(other_usd or 0.0)})
     if u.get("date") == _today():
         USAGE.update({"usd": float(u.get("usd", 0.0)), "calls": int(u.get("calls", 0))})
-    BUDGET["usd"] = float(budget_usd or 0)
+    set_budget(budget_usd)
+
+
+def set_budget(budget_usd) -> None:
+    try:
+        BUDGET["usd"] = max(0.0, float(budget_usd or 0))
+    except (TypeError, ValueError):
+        pass
 
 
 def save_usage(state) -> None:
     if state is not None and USAGE.get("date"):
-        state.data["ai_usage"] = dict(USAGE)
+        state.data["ai_usage"] = {"date": USAGE["date"], "usd": USAGE.get("usd", 0.0), "calls": USAGE.get("calls", 0)}
 
 
 def over_budget() -> bool:
     if USAGE.get("date") != _today():
-        USAGE.update({"date": _today(), "usd": 0.0, "calls": 0})
-    return BUDGET["usd"] > 0 and USAGE["usd"] >= BUDGET["usd"]
+        USAGE.update({"date": _today(), "usd": 0.0, "calls": 0, "other": 0.0})
+    return BUDGET["usd"] > 0 and USAGE["usd"] + USAGE.get("other", 0.0) >= BUDGET["usd"]
+
+
+def configured() -> bool:
+    return bool(os.environ.get("ANTHROPIC_API_KEY"))
+
+
+def tripped() -> bool:
+    """Several calls in a row failed in this process: stop trying until the next run."""
+    return STATUS["streak"] >= TRIP_AFTER
+
+
+def reset_run() -> None:
+    STATUS["streak"] = 0
 
 
 def enabled() -> bool:
-    """Claude available: key present and today's budget not used up."""
-    return bool(os.environ.get("ANTHROPIC_API_KEY")) and not over_budget()
+    """Claude available: key present, today's budget not used up, API not failing right now."""
+    return configured() and not over_budget() and not tripped()
+
+
+def _failed(msg: str) -> None:
+    STATUS["fail"] += 1
+    STATUS["streak"] += 1
+    STATUS["last_error"] = msg[:200]
 
 
 def _client():
@@ -69,6 +107,8 @@ def _client():
 def _json_call(model: str, system: str, user: str, schema: dict, max_tokens: int, effort: str) -> Optional[dict]:
     import anthropic
 
+    if tripped():
+        return None
     client = _client()
     kw: dict[str, Any] = dict(
         model=model, max_tokens=max_tokens, system=system,
@@ -81,10 +121,16 @@ def _json_call(model: str, system: str, user: str, schema: dict, max_tokens: int
         resp = client.messages.create(**kw)
     except anthropic.APIStatusError as e:
         log.warning("claude API error %s: %s", getattr(e, "status_code", "?"), e)
+        body = getattr(e, "body", None)
+        detail = ((body or {}).get("error") or {}).get("message") if isinstance(body, dict) else None
+        _failed(f"HTTP {getattr(e, 'status_code', '?')}: {detail or e}")
         return None
     except anthropic.APIConnectionError as e:
         log.warning("claude API connection error: %s", e)
+        _failed(f"нет соединения ({type(e).__name__})")
         return None
+    STATUS["ok"] += 1
+    STATUS["streak"] = 0
     try:
         u = resp.usage
         pin, pout = PRICES.get(getattr(resp, "model", model), PRICES.get(model, (4.0, 20.0)))
@@ -248,8 +294,14 @@ def _requirements(w) -> str:
     return "\n".join(parts)
 
 
-def verdicts(state, w, titles: list[str]) -> dict[str, dict]:
-    """title -> {"match", "year", "ram_gb"} for the given titles (cached per watch)."""
+def verdicts(state, w, titles: list[str], lookup=(), stats: Optional[dict] = None) -> dict[str, dict]:
+    """title -> {"match", "year", "ram_gb", "model", "unverified"} (cached per watch).
+
+    `titles` are sent to Claude when not cached (and Claude is enabled); `lookup` titles only use the cache.
+    stats (optional) gets "capped" (titles left for the next run) and "failed" (API trouble) lists."""
+    stats = stats if stats is not None else {}
+    stats.setdefault("capped", [])
+    stats.setdefault("failed", [])
     cache = state.data.setdefault("ai_cache", {}).setdefault(w.id, {})
     sig = _key(_requirements(w) + f"|v{CLASSIFY_VERSION}")
     if cache.get("_sig") != sig:          # criteria changed -> judge again
@@ -257,14 +309,18 @@ def verdicts(state, w, titles: list[str]) -> dict[str, dict]:
         cache["_sig"] = sig
     out: dict[str, dict] = {}
     todo: list[str] = []
-    for t in dict.fromkeys(titles):
+    asked = set(titles)
+    for t in dict.fromkeys([*titles, *lookup]):
         v = cache.get(_key(t))
         if v is not None:
             out[t] = {"match": v[0], "year": v[1], "ram_gb": v[2], "model": v[4] if len(v) > 4 else None,
                       "unverified": v[5] if len(v) > 5 else ""}
-        else:
+        elif t in asked:
             todo.append(t)
-    if todo and enabled():
+    if todo and configured() and not over_budget() and tripped():
+        stats["failed"].extend(todo)        # Claude kept failing earlier in this run
+    elif todo and enabled():
+        stats["capped"].extend(todo[MAX_NEW_PER_WATCH:])
         todo = todo[:MAX_NEW_PER_WATCH]
         log.info("claude judging %d new titles for %s", len(todo), w.id)
         req = _requirements(w)
@@ -274,7 +330,8 @@ def verdicts(state, w, titles: list[str]) -> dict[str, dict]:
             data = _json_call(CLASSIFY_MODEL, CLASSIFY_SYSTEM, f"{req}\n\nTitles:\n{listing}", CLASSIFY_SCHEMA,
                               8000, "low")
             if not data:
-                break  # API trouble: the rule-based checks are used for the rest this run
+                stats["failed"].extend(todo[i:])   # API trouble: the engine decides (wait / rule-based checks)
+                break
             for it in data.get("items", []):
                 idx = it.get("i")
                 if isinstance(idx, int) and 0 <= idx < len(chunk):
@@ -309,12 +366,27 @@ GATE_SYSTEM = (
 )
 
 
+def _gate_sig(w) -> str:
+    return _key(_requirements(w) + f"|{w.min_price}|{w.max_price}|{w.min_discount}")
+
+
+def gate_cached(state, w, o) -> Optional[bool]:
+    """The gate's earlier verdict for this offer at this price (None = not judged)."""
+    cache = (state.data.get("ai_gate") or {}).get(w.id)
+    if not cache:
+        return None
+    if cache.get("_sig") != _gate_sig(w):
+        return None
+    return cache.get(_key(f"{o.key}|{int(o.price)}"))
+
+
 def gate(state, w, offers: list) -> dict:
-    """offer.key -> True/False for the offers about to be sent (cached per offer and price)."""
-    if not enabled() or not offers:
+    """offer.key -> True/False for the offers about to be sent (cached per offer and price).
+    Over budget / API down: only cached verdicts."""
+    if not configured() or not offers:
         return {}
     cache = state.data.setdefault("ai_gate", {}).setdefault(w.id, {})
-    sig = _key(_requirements(w) + f"|{w.min_price}|{w.max_price}|{w.min_discount}")
+    sig = _gate_sig(w)
     if cache.get("_sig") != sig:
         cache.clear()
         cache["_sig"] = sig
@@ -334,6 +406,8 @@ def gate(state, w, offers: list) -> dict:
     if w.min_discount:
         limits.append(f"discount >= {w.min_discount:g}%")
     req = _requirements(w) + ("\nPrice rules: " + ", ".join(limits) if limits else "")
+    if not enabled():
+        return out
     for i in range(0, len(todo), 30):
         chunk = todo[i:i + 30]
         lines = []

@@ -113,13 +113,35 @@ def save(branch: str, path: str) -> int:
     return 0
 
 
+def _job_started(repo: str, h: dict) -> float:
+    """When this workflow run started (BOT_JOB_STARTED, else the run's run_started_at; else now)."""
+    env = os.environ.get("BOT_JOB_STARTED")
+    if env:
+        try:
+            return float(env)
+        except ValueError:
+            pass
+    run_id = os.environ.get("GITHUB_RUN_ID")
+    if run_id:
+        try:
+            import datetime as _dt
+
+            r = requests.get(f"{API}/repos/{repo}/actions/runs/{run_id}", headers=h, timeout=20)
+            ts = (r.json() or {}).get("run_started_at") if r.status_code == 200 else None
+            if ts:
+                return _dt.datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
+        except Exception:
+            pass
+    return time.time()
+
+
 def next_run(workflow: str, min_interval: int = 600) -> int:
     """Keep a self-hosted chain going: wait until `min_interval` s after this job started, then dispatch again."""
-    started = float(os.environ.get("BOT_JOB_STARTED") or time.time())
+    repo, h = _env()
+    started = _job_started(repo, h)
     wait = min_interval - (time.time() - started)
     if wait > 0:
         time.sleep(min(wait, min_interval))
-    repo, h = _env()
     ref = os.environ.get("GITHUB_REF_NAME") or "main"
     r = _req("POST", f"{API}/repos/{repo}/actions/workflows/{workflow}/dispatches", h, json={"ref": ref})
     print(f"next {workflow} run requested: HTTP {r.status_code}")

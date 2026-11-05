@@ -98,8 +98,7 @@ def _ai_reparse(state) -> None:
     from . import ai
     from .config import watch_from_dict
 
-    ai.load_usage(state, float((state.data.get("settings_overrides") or {}).get("ai_daily_budget_usd", 1.0)))
-    if not ai.enabled():
+    if not ai.enabled():   # usage + budget were loaded by cmd_run
         return
     redone = []
     tried = state.data.setdefault("ai_reparsed", [])
@@ -134,7 +133,30 @@ def _ai_reparse(state) -> None:
             + ", ".join(f"<b>{esc(n)}</b>" for n in redone) + ". Скоро пришлю новые подборки.")
 
 
-HOME_KEYS = ("offers", "initialized", "stores", "runs", "last_run", "last_summary", "url_fail", "events_applied")
+HOME_KEYS = ("offers", "initialized", "stores", "runs", "last_run", "last_summary", "url_fail", "events_applied",
+             "ai_usage", "ai_cache", "ai_gate", "model_np", "alert_refs", "ai_fail_runs")
+
+
+HOME_STALE_H = 3
+
+
+def _check_home_runner(state, home_data: dict) -> None:
+    """Hybrid mode with the home PC off / broken: the cloud checks the home shops itself again (they may block it,
+    but that beats not checking eMAG at all) and says so once a day."""
+    if os.environ.get("BOT_HOME_ENABLED", "").lower() not in ("1", "true", "yes"):
+        return
+    last = home_data.get("last_run") if isinstance(home_data, dict) else None
+    age_h = (time.time() - float(last)) / 3600 if last else None
+    if age_h is not None and age_h < HOME_STALE_H:
+        state.data.pop("home_stale_warned", None)
+        return
+    os.environ["BOT_HOME_ENABLED"] = "stale"     # Engine / Mini App: home shops are checked from the cloud now
+    if state.get("telegram", "chat_id") and time.time() - float(state.data.get("home_stale_warned", 0) or 0) > 86400:
+        when = f"уже {age_h:.0f} ч" if age_h is not None else "ещё ни разу"
+        state.data.setdefault("notices", []).append(
+            f"🏠 Домашний компьютер не проверял цены {when}. Пока проверяю eMAG, PC Garage и др. из облака "
+            "(они могут блокировать). Включите компьютер или проверьте раннер (Settings → Actions → Runners).")
+        state.data["home_stale_warned"] = int(time.time())
 
 
 def _home_state_path(main_path: str) -> str:
@@ -146,9 +168,14 @@ def cmd_run(args) -> int:
     state = State.load(args.state)
     home_mode = os.environ.get("BOT_MODE", "").lower() == "home"
     home_path = _home_state_path(args.state)
+    peer_usage = None
     if home_mode:
         # watches/chat come from the main state (read-only here); offers & health live in state-home.json
         home = State.load(home_path)
+        # the cloud runner's offers / announced models: one alert per model across both runners
+        state.data["peer_offers"] = state.data.get("offers", {})
+        state.data["peer_model_np"] = state.data.get("model_np", {})
+        peer_usage = state.data.get("ai_usage")
         for k in HOME_KEYS:
             if k in home.data:
                 state.data[k] = home.data[k]
@@ -160,18 +187,26 @@ def cmd_run(args) -> int:
         state.data["events_applied"] = state.replay_watch_events(
             state.data.get("watch_events"), state.data.get("watch_seq"), state.data.get("events_applied"))
         state.path = home_path
-    elif os.path.exists(home_path):
-        try:
-            state.data["home_offers"] = State.load(home_path).data.get("offers", {})
-        except Exception:
-            pass
+    else:
+        hd: dict = {}
+        if os.path.exists(home_path):
+            try:
+                hd = State.load(home_path).data
+                state.data["peer_offers"] = hd.get("offers", {})
+                state.data["peer_model_np"] = hd.get("model_np", {})
+                state.data["peer_alert_refs"] = hd.get("alert_refs", {})   # 👎 under the home runner's alerts
+                peer_usage = hd.get("ai_usage")
+            except Exception:
+                hd = {}
+        _check_home_runner(state, hd)
     # --dry-run must not touch the real bot: no getUpdates (it would confirm and swallow the production
     # bot's pending commands), no replies, no alerts
     tg = Telegram(None) if args.dry_run else Telegram.from_env()
     engine = Engine(cfg, state, tg, dry_run=args.dry_run)
     from . import ai as _ai
 
-    _ai.load_usage(state, getattr(engine.settings, "ai_daily_budget_usd", 1.0))
+    # one daily budget for both runners: the other one's spend today counts too
+    _ai.load_usage(state, getattr(engine.settings, "ai_daily_budget_usd", 1.0), _ai.spent_today(peer_usage))
     if IMPORT_ERRORS:
         print("store import errors:", IMPORT_ERRORS, file=sys.stderr)
     cp = CommandProcessor(engine, mode="actions")
@@ -216,7 +251,6 @@ def cmd_run(args) -> int:
                 state.data["app"] = cp.ui.webapp_snapshot()   # the Mini App reads this from the state branch
             except Exception:
                 pass
-        state.data.pop("home_offers", None)
         state.save()
     return 0
 
@@ -257,6 +291,9 @@ def cmd_daemon(args, *, sleep=None, max_loops: int | None = None) -> int:
             pause = 0.0
             try:
                 engine = Engine(cfg, state, tg)
+                from . import ai as _ai
+
+                _ai.load_usage(state, getattr(engine.settings, "ai_daily_budget_usd", 1.0))
                 cp = CommandProcessor(engine, mode="daemon")
                 if tg.enabled:
                     try:
@@ -285,6 +322,7 @@ def cmd_daemon(args, *, sleep=None, max_loops: int | None = None) -> int:
                         next_run = time.time() + cycle_backoff(cycle_fails, interval)
                         log.error("cycle crashed %d time(s) in a row; next try in %.0fs", cycle_fails,
                                   next_run - time.time())
+                    _ai.save_usage(state)
                     state.save_if_changed()
             except Exception:
                 # e.g. the Engine cannot even be built (broken shop entry): no cycle ran, next_run did not move,

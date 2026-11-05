@@ -190,6 +190,8 @@ _BUNDLE = re.compile(r"\s(\+(?![^\n]*\d)|\bcu cadou\b|\bcadou\b|\bbonus\b).*$", 
 def model_key(title: str) -> str:
     """Same product from different shops / in different colours -> same key (best effort without Claude)."""
     t = norm(_BUNDLE.sub("", title or ""))
+    tv = bool(re.search(r"\b(televizor|tv|monitor|oled|qled|qned|mini led)\b", t))
+    t = re.sub(r"(?<=[0-9a-z])\+(?![0-9a-z])", " plus ", t)   # "S25+" is not "S25"; "S25 Plus" == "S25+"
     t = re.sub(r"\b(ultra|full)\s+hd\b|\bhd\s+ready\b|\b4k\b|\b8k\b", " ", t)
     t = re.sub(r"\b\d{2,3}\s*cm\b|\b\d{2,3}\s*hz\b|\bclasa\s+[a-g]\b|\b\d{2,4}\s*-?\s*bit\b", " ", t)
     toks = []
@@ -198,12 +200,14 @@ def model_key(title: str) -> str:
             continue
         toks.append(tok)
     # TV / monitor model codes ("55c46la", "oled55c46la", "ue55du7172") identify the product on their own
-    codes = sorted({re.sub(r"^(oled|qled|qned|ue|qe|kd|xr|tx|tq|tu|un)(?=\d)", "", x) for x in toks
+    # (only for screens: a laptop's "15irh8" names a whole family of configurations)
+    codes = tv and sorted({re.sub(r"^(oled|qled|qned|ue|qe|kd|xr|tx|tq|tu|un)(?=\d)", "", x) for x in toks
                     if re.fullmatch(r"(oled|qled|qned|ue|qe|kd|xr|tx|tq|tu|un)?\d{2}[a-z]+\d*[a-z0-9]*", x) and len(x) >= 5})
     if codes:
         return "code:" + codes[0]
-    # shop part numbers ("mymj3zd", "sms931bzbdeue") differ between shops: drop them
-    toks = [x for x in toks if (len(x) > 1 or x.isdigit()) and not (len(x) >= 6 and re.search(r"[a-z]", x) and re.search(r"\d", x)
+    # shop part numbers ("mymj3zd", "sms931bzbdeue") differ between shops: drop them; model numbers that
+    # start with a digit ("1000xm5", "13700h") stay
+    toks = [x for x in toks if (len(x) > 1 or x.isdigit()) and not (len(x) >= 6 and x[0].isalpha() and re.search(r"\d", x)
                                                     and not _STORAGE.match(x))]
     storage = sorted({x for x in toks if _STORAGE.match(x)}, key=lambda x: (x.endswith("tb"), int(re.match(r"\d+", x).group())))
     rest = [x for x in toks if not _STORAGE.match(x)]

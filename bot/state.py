@@ -82,8 +82,12 @@ class State:
         d.setdefault("runs", 0)
         d.setdefault("last_run", None)
 
+    # read-only copies of the other runner's data (cloud <-> home PC), never written back
+    TRANSIENT = ("peer_offers", "peer_model_np", "peer_alert_refs", "home_offers")
+
     def _dump(self) -> str:
-        return json.dumps(self.data, ensure_ascii=False, separators=(",", ":"))
+        data = {k: v for k, v in self.data.items() if k not in self.TRANSIENT}
+        return json.dumps(data, ensure_ascii=False, separators=(",", ":"))
 
     def save(self, path: Optional[str] = None) -> None:
         path = path or self.path
@@ -325,7 +329,7 @@ class State:
         """Cheapest current matches. With dedupe, one row per model (its cheapest shop) and "n" = shops with it."""
         cutoff = now() - max_age_h * 3600
         prefix = watch.id + "|"
-        pools = [self.offers, self.data.get("home_offers") or {}]   # home_offers: read-only copy from the home runner
+        pools = [self.offers, self.data.get("peer_offers") or {}]   # peer_offers: read-only copy from the home runner
         rows = [r for pool in pools for k, r in pool.items()
                 if k.startswith(prefix) and r.get("m") and r.get("ls", 0) >= cutoff]
         rows.sort(key=lambda r: r.get("p") or 1e12)

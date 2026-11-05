@@ -73,12 +73,13 @@ def test_irrelevant_titles_never_reach_claude(monkeypatch):
     ai.load_usage(State.load(""), 1.0)
     judged = []
 
-    def fake_verdicts(state, w, titles):
+    def fake_verdicts(state, w, titles, lookup=(), stats=None):
         judged.extend(titles)
         return {t: {"match": True, "year": None, "ram_gb": None, "model": None} for t in titles}
 
     monkeypatch.setattr(ai, "verdicts", fake_verdicts)
     monkeypatch.setattr(ai, "gate", lambda state, w, offers: {})
+    monkeypatch.setattr(ai, "parse_requests", lambda text: [])   # no network in tests
     Shop.items = [Offer(store="shop", title="Telefon mobil Samsung Galaxy S25, 12GB RAM", url="https://shop.ro/a", price=3000, offer_id="a"),
                   Offer(store="shop", title="Dispenser sapun Pouce, alb", url="https://shop.ro/b", price=5, offer_id="b")]
     tg = TG()
@@ -97,12 +98,13 @@ def test_unverifiable_requirement_is_flagged_not_rejected(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
     ai.load_usage(State.load(""), 0.0)
 
-    def fake_verdicts(state, w, titles):
+    def fake_verdicts(state, w, titles, lookup=(), stats=None):
         return {t: {"match": True, "year": 2025, "ram_gb": 16, "model": "lenovo ideapad 5 i7 16gb",
                     "unverified": "16 ГБ одной планкой, второй слот свободен"} for t in titles}
 
     monkeypatch.setattr(ai, "verdicts", fake_verdicts)
     monkeypatch.setattr(ai, "gate", lambda state, w, offers: {})
+    monkeypatch.setattr(ai, "parse_requests", lambda text: [])   # no network in tests
     Shop.items = [Offer(store="shop", title="Laptop Lenovo IdeaPad 5 Intel Core i7 16GB 1TB", url="https://shop.ro/l", price=3999, offer_id="l")]
     tg = TG()
     e = Engine(Config(Settings(), []), State.load(""), tg)

@@ -28,6 +28,7 @@ FETCH_TIME_BUDGET = 900.0    # s for the whole fetch phase (the GitHub job is ki
 WARN_COOLDOWN = 24 * 3600    # s between two "⚠️ не отвечает" messages for the same store / link
 
 SKIP_BUDGET = "skipped (time budget)"
+AI_FALLBACK_AFTER = 3        # runs with Claude failing before the rule-based checks take over
 
 
 def _setting(settings: Any, name: str, default: Any, conv=float) -> Any:
@@ -351,6 +352,11 @@ class Engine:
         top_n = max(1, _setting(self.settings, "first_run_digest", 8, int))
         limit = max(1, _setting(self.settings, "max_alerts_per_watch", 12, int))
         summary = {"watches": len(watches), "alerts": 0, "matches": 0, "stores": {}}
+        from . import ai
+
+        ai.reset_run()
+        ai_ok0, ai_fail0 = ai.STATUS["ok"], ai.STATUS["fail"]
+        self._ai_fallback = int(self.state.data.get("ai_fail_runs", 0) or 0) >= AI_FALLBACK_AFTER
         self._send_notices()
 
         for w in watches:
@@ -377,28 +383,38 @@ class Engine:
                             any_store_ok = True
                             candidates.append((r.products[u], False))
             drop_pct = w.drop_pct if w.drop_pct is not None else drop_default
-            judged = self._ai_judge(w, candidates)
+            judged, hold = self._ai_judge(w, candidates)
+            if first and hold and w.ai and not self._ai_fallback and ai.STATUS["fail"] > ai_fail0:
+                continue   # Claude is failing: no "nothing found" digest built from half-judged results
             for o, check_title in candidates:
                 ref = self.state.reference_price(w, o)
                 v = judged.get(o.title) if check_title else None
-                if w.exclude_models and ((v or {}).get("model") or model_key(o.title)) in w.exclude_models:
+                if w.exclude_models and _excluded(w, o, v):
                     continue   # the user said "👎 не то" about this model
-                if v is None and check_title and w.ai and judged.get("__ai_on__"):
-                    continue   # Claude-parsed watch: no verdict yet (API hiccup / per-run cap) -> next run
+                if check_title and o.title in hold:
+                    continue   # Claude-parsed watch: no verdict yet (per-run cap / API hiccup) -> next run
                 if v is not None:
                     # Claude decided what the product is (type, model year, RAM); only price rules remain
                     res = evaluate(w, o, ref, check_title=False)
                     if not v["match"]:
+                        rec = self.state.offers.get(self.state.rec_key(w, o))
+                        if rec is not None:
+                            rec["m"] = False   # e.g. re-judged after a 👎: off the best-price lists too
                         continue
                 else:
                     res = evaluate(w, o, ref, check_title=check_title)
                 if not res.title_ok:
                     continue
-                if res.ok:
+                ok = res.ok
+                if ok and ai.gate_cached(self.state, w, o) is False:
+                    ok = False   # Claude's output gate already rejected this listing at this price
+                if ok:
                     matched_offers.append((o, res.discount))
-                a = self.state.observe(w, o, res.ok, max(0.0, drop_pct), res.discount)
+                a = self.state.observe(w, o, ok, max(0.0, drop_pct), res.discount)
                 rec = self.state.offers.get(self.state.rec_key(w, o))
                 if rec is not None:
+                    if ok:
+                        rec.pop("rej", None)
                     rec["mk"] = (v or {}).get("model") or model_key(o.title)
                     if (v or {}).get("unverified"):
                         rec["uv"] = v["unverified"]
@@ -408,50 +424,47 @@ class Engine:
                     alerts.append(a)
             summary["matches"] += len(matched_offers)
 
-            alerts = self._one_per_model(w, alerts, drop_pct)
             if first:
                 if not any_store_ok:
                     continue  # nothing fetched yet; keep the watch un-initialised
-                new_alerts = sorted([a for a in alerts if a.kind in ("new", "rematch")], key=lambda a: a.offer.price)
-                new_alerts = self._gate(w, new_alerts, keep=top_n)
-                alerts = [a for a in alerts if a.kind not in ("new", "rematch") or a in new_alerts]
-                if new_alerts:
-                    msg = format_alerts(w.name, new_alerts[:top_n], self.store_names, digest=True,
-                                        total_matches=len(new_alerts), numbered=True)
+                final, hidden = self._select(w, alerts, drop_pct, keep=top_n)
+                if final:
+                    msg = format_alerts(w.name, final[:top_n], self.store_names, digest=True,
+                                        total_matches=len(final), numbered=True)
                 else:
                     msg = (f"👀 <b>{esc(w.name)}</b>: сейчас подходящих предложений нет. "
                            f"Слежу ({len(store_keys) or len(w.urls)} источн.) и напишу, как только появятся.")
-                if self._send(msg, inline=self._alert_buttons(w, new_alerts[:top_n])):
+                if self._send(msg, inline=self._alert_buttons(w, final[:top_n])):
                     self.state.mark_initialized(w)
-                    for a in new_alerts:
+                    for a in final + hidden:
                         self.state.mark_notified(a)  # do not re-announce everything one by one later
-                    self._commit_models(w, new_alerts)
-                    summary["alerts"] += min(len(new_alerts), top_n)
-                    sent_ids = {id(a) for a in new_alerts}
-                    rest = [a for a in alerts if id(a) not in sent_ids]
-                else:
-                    rest = alerts  # not delivered (Telegram down, no chat bound yet): the next run builds it again
-                for a in rest:
-                    self.state.mark_pending(a)
+                    self._commit_models(w, final)
+                    summary["alerts"] += min(len(final), top_n)
+                else:   # not delivered (Telegram down, no chat bound yet): the next run builds it again
+                    for a in final + hidden:
+                        self.state.mark_pending(a)
                 continue
 
             if alerts:
-                # cheapest first; everything is marked as notified so nothing trickles in later runs
-                alerts.sort(key=lambda a: a.offer.price)
-                alerts = self._gate(w, alerts, keep=limit)
-                send, rest = alerts[:limit], alerts[limit:]
+                final, hidden = self._select(w, alerts, drop_pct, keep=limit)
+                if not final:
+                    for a in hidden:
+                        self.state.mark_notified(a)   # all of them: same model cheaper elsewhere / already announced
+                    continue
+                send, rest = final[:limit], final[limit:]
                 msg = format_alerts(w.name, send, self.store_names, numbered=True)
                 if rest:
                     msg += f"\n\n…и ещё {len(rest)} подходящих (дороже) — смотрите в приложении."
                 if self._send(msg, inline=self._alert_buttons(w, send)):
-                    for a in alerts:
+                    for a in final + hidden:
                         self.state.mark_notified(a)
-                    self._commit_models(w, alerts)
+                    self._commit_models(w, final)
                     summary["alerts"] += len(send)
                 else:
-                    for a in alerts:
+                    for a in final + hidden:
                         self.state.mark_pending(a)   # retried on the next run
 
+        self._ai_health(ai.STATUS["ok"] - ai_ok0, ai.STATUS["fail"] - ai_fail0)
         self._store_health(runs)
         self._url_health(watches, runs)
         for k, r in runs.items():
@@ -474,29 +487,51 @@ class Engine:
         return summary
 
     # ------------------------------------------------------------------ health messages
-    def _one_per_model(self, w: Watch, alerts: list, drop_pct: float) -> list:
+    def _select(self, w: Watch, alerts: list, drop_pct: float, keep: int) -> tuple[list, list]:
+        """Alerts to send (cheapest first, Claude-approved, one per model) and the ones folded into them.
+        The gate runs on the dedupe winners; a rejected winner lets the next listing of that model take over."""
+        alerts = sorted(alerts, key=lambda a: a.offer.price)
+        final, hidden = self._one_per_model(w, alerts, drop_pct)
+        for _ in range(4):
+            gated = self._gate(w, final, keep=keep)
+            if len(gated) == len(final):
+                break
+            ok_ids = {id(a) for a in gated}
+            rejected = {id(a) for a in final if id(a) not in ok_ids}
+            alerts = [a for a in alerts if id(a) not in rejected]
+            final, hidden = self._one_per_model(w, alerts, drop_pct)
+        else:
+            final = self._gate(w, final, keep=keep)
+        return final, hidden
+
+    def _one_per_model(self, w: Watch, alerts: list, drop_pct: float) -> tuple[list, list]:
         """Same model from several shops / colours -> only its cheapest offer is announced, and only when that is
-        a new model or a new low for the model. The other shops are listed under it."""
+        a new model or a new low for the model. The other shops are listed under it. Returns (keep, folded);
+        the caller marks the folded ones notified together with the kept ones."""
         if not alerts or not bool(getattr(self.settings, "dedupe_models", True)):
-            return alerts
+            return list(alerts), []
         cutoff = time.time() - 6 * 3600
         prefix = w.id + "|"
         groups: dict[str, list] = {}
-        for k, r in self.state.offers.items():
-            if k.startswith(prefix) and r.get("m") and r.get("ls", 0) >= cutoff and r.get("mk"):
-                groups.setdefault(r["mk"], []).append(r)
-        model_np = self.state.data.setdefault("model_np", {}).setdefault(w.id, {})
-        keep = []
+        pools = [self.state.offers, self.state.data.get("peer_offers") or {}]   # peer: the other runner's offers
+        for pool in pools:
+            for k, r in pool.items():
+                if k.startswith(prefix) and r.get("m") and r.get("ls", 0) >= cutoff and r.get("mk"):
+                    groups.setdefault(r["mk"], []).append(r)
+        model_np = dict((self.state.data.get("peer_model_np") or {}).get(w.id) or {})
+        for mk, p in (self.state.data.get("model_np") or {}).get(w.id, {}).items():
+            model_np[mk] = min(p, model_np.get(mk, p))
+        keep, folded = [], []
         for a in alerts:
             rec = self.state.offers.get(self.state.rec_key(w, a.offer)) or {}
             mk = rec.get("mk") or model_key(a.offer.title)
             same = sorted(groups.get(mk, []), key=lambda r: r.get("p") or 1e12)
             if same and (same[0].get("p") or 1e12) < a.offer.price - 0.01:
-                self.state.mark_notified(a)          # another shop sells this model cheaper right now
+                folded.append(a)          # another shop sells this model cheaper right now
                 continue
             prev = model_np.get(mk)
             if a.kind == "new" and prev is not None and a.offer.price > prev * (1 - max(0.0, drop_pct) / 100.0):
-                self.state.mark_notified(a)          # already announced this model at this price or lower
+                folded.append(a)          # already announced this model at this price or lower
                 continue
             a.model_key = mk
             a.others = [(r.get("p"), r.get("s")) for r in same if r.get("u") != a.offer.url][:3]
@@ -505,11 +540,11 @@ class Engine:
         out, seen = [], set()
         for a in sorted(keep, key=lambda a: a.offer.price):
             if a.model_key in seen:
-                self.state.mark_notified(a)
+                folded.append(a)
                 continue
             seen.add(a.model_key)
             out.append(a)
-        return out
+        return out, folded
 
     def _commit_models(self, w: Watch, sent: list) -> None:
         model_np = self.state.data.setdefault("model_np", {}).setdefault(w.id, {})
@@ -523,7 +558,7 @@ class Engine:
         silently marked notified, so they never reach the user (or the Mini App's best-price list)."""
         from . import ai
 
-        if not alerts or not ai.enabled():
+        if not alerts or not ai.configured():
             return alerts
         head = alerts[: max(keep * 2, keep + 6)]      # judge the ones that would actually be shown, plus spares
         try:
@@ -537,7 +572,6 @@ class Engine:
                 rec = self.state.offers.get(self.state.rec_key(w, a.offer))
                 if rec is not None:
                     rec["m"] = False
-                    rec["np"] = a.offer.price
                     rec["rej"] = 1
                 continue
             out.append(a)
@@ -545,33 +579,63 @@ class Engine:
             log.info("AI gate %s: %d of %d offers rejected", w.id, len(alerts) - len(out), len(alerts))
         return out
 
-    def _ai_judge(self, w: Watch, candidates: list) -> dict:
-        """Claude verdicts for titles that already pass the cheap price/stock rules (cached per watch)."""
+    def _ai_judge(self, w: Watch, candidates: list) -> tuple[dict, set]:
+        """Claude verdicts (cached per watch) and the titles to hold back this run.
+
+        Titles that pass the cheap price/stock rules are sent to Claude; the others only use cached verdicts, so a
+        sold-out or too-expensive listing keeps its history (back-in-stock / price-drop alerts later).
+        Held back (Claude-parsed watches): beyond the per-run cap, or Claude failing (until the rule-based fallback
+        takes over), and titles that share no word with the searches. Over budget: cache + rule-based checks."""
         from . import ai
 
-        if not ai.enabled():   # with a key, Claude judges every watch (not only the ones it parsed)
-            return {}
-        titles = []
+        if not ai.configured():
+            return {}, set()
+        judge, lookup, hold = [], [], set()
         words = _search_words(w)
         for o, check_title in candidates:
             if not check_title:
                 continue
-            if w.max_price is not None and o.price > w.max_price * 1.02:
-                continue
-            if w.min_price is not None and o.price < w.min_price:
-                continue
-            if w.in_stock and o.in_stock is False:
-                continue
             if not _relevant(o.title, words):
-                continue        # shares no word with the searches (shops pad results with random items)
-            titles.append(o.title)
+                if w.ai:
+                    hold.add(o.title)   # shops pad results with random items
+                continue
+            if (w.max_price is not None and o.price > w.max_price * 1.02) or \
+                    (w.min_price is not None and o.price < w.min_price) or (w.in_stock and o.in_stock is False):
+                lookup.append(o.title)
+                continue
+            judge.append(o.title)
+        stats: dict = {}
         try:
-            out = ai.verdicts(self.state, w, titles)
+            out = ai.verdicts(self.state, w, judge, lookup=lookup, stats=stats)
         except Exception as e:   # never let the AI step break a run
             log.warning("AI judge failed for %s: %s", w.id, e)
-            out = {}
-        out["__ai_on__"] = {"match": False}
-        return out
+            out, stats = {}, {"failed": [t for t in judge]}
+        if w.ai:
+            hold |= set(stats.get("capped") or ())
+            if not self._ai_fallback:
+                hold |= set(stats.get("failed") or ())
+        hold -= set(out)
+        return out, hold
+
+    def _ai_health(self, ok: int, failed: int) -> None:
+        """Count runs in which Claude failed and nothing succeeded; after a few, rule-based checks take over
+        (and the user hears about it once). One good call ends it."""
+        from . import ai
+
+        n = int(self.state.data.get("ai_fail_runs", 0) or 0)
+        if ok:
+            if n >= AI_FALLBACK_AFTER:
+                self.state.data.setdefault("notices", []).append(
+                    "✅ Claude снова отвечает — предложения опять проверяются им.")
+            self.state.data["ai_fail_runs"] = 0
+        elif failed:
+            self.state.data["ai_fail_runs"] = n + 1
+            if n + 1 == AI_FALLBACK_AFTER:
+                self.state.data.setdefault("notices", []).append(
+                    "⚠️ Claude API не отвечает несколько проверок подряд"
+                    + (f" ({esc(ai.STATUS.get('last_error') or '')})" if ai.STATUS.get("last_error") else "")
+                    + ". Пока работают простые фильтры (возможен мусор). Если дело в балансе — пополните его на "
+                      "console.anthropic.com.")
 
     def _store_health(self, runs: dict[str, StoreRun]) -> None:
         threshold = max(1, _setting(self.settings, "store_fail_alert_after", 6, int))
@@ -713,6 +777,13 @@ class Engine:
             print("---- [no chat bound yet: will be sent after /start] ----\n" + text)
             return False
         return res is not False   # Telegram.send returns a bool; a None from older fakes counts as delivered
+
+
+def _excluded(w: Watch, o: Offer, v: Optional[dict]) -> bool:
+    keys = {model_key(o.title)}
+    if v and v.get("model"):
+        keys.add(v["model"])
+    return bool(keys & set(w.exclude_models))
 
 
 def _warned(h: dict) -> bool:
