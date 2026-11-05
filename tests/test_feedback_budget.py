@@ -89,3 +89,27 @@ def test_irrelevant_titles_never_reach_claude(monkeypatch):
     cp.poll()
     e.run_cycle()
     assert any("Galaxy S25" in t for t in judged) and not any("Dispenser" in t for t in judged)
+
+
+def test_unverifiable_requirement_is_flagged_not_rejected(monkeypatch):
+    from bot import ai
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+    ai.load_usage(State.load(""), 0.0)
+
+    def fake_verdicts(state, w, titles):
+        return {t: {"match": True, "year": 2025, "ram_gb": 16, "model": "lenovo ideapad 5 i7 16gb",
+                    "unverified": "16 ГБ одной планкой, второй слот свободен"} for t in titles}
+
+    monkeypatch.setattr(ai, "verdicts", fake_verdicts)
+    monkeypatch.setattr(ai, "gate", lambda state, w, offers: {})
+    Shop.items = [Offer(store="shop", title="Laptop Lenovo IdeaPad 5 Intel Core i7 16GB 1TB", url="https://shop.ro/l", price=3999, offer_id="l")]
+    tg = TG()
+    e = Engine(Config(Settings(), []), State.load(""), tg)
+    e.reg, e.store_names = {"shop": Shop}, {"shop": "Shop"}
+    cp = CommandProcessor(e)
+    tg.updates = [msg(1, "/start"), msg(2, "laptop lenovo ideapad i7 до 5000")]
+    cp.poll()
+    e.run_cycle()
+    digest = [p["text"] for p in sent(tg, "найдено")]
+    assert digest and "IdeaPad" in digest[-1] and "❓ проверьте сами: 16 ГБ одной планкой" in digest[-1]

@@ -400,6 +400,10 @@ class Engine:
                 rec = self.state.offers.get(self.state.rec_key(w, o))
                 if rec is not None:
                     rec["mk"] = (v or {}).get("model") or model_key(o.title)
+                    if (v or {}).get("unverified"):
+                        rec["uv"] = v["unverified"]
+                if a is not None and (v or {}).get("unverified"):
+                    a.unverified = v["unverified"]
                 if a:
                     alerts.append(a)
             summary["matches"] += len(matched_offers)

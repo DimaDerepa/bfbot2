@@ -19,7 +19,8 @@ log = logging.getLogger("bot.ai")
 PARSE_MODEL = os.environ.get("BOT_AI_MODEL") or "claude-opus-5-5"
 CLASSIFY_MODEL = os.environ.get("BOT_AI_CLASSIFY_MODEL") or PARSE_MODEL
 BATCH = 40
-MAX_NEW_PER_WATCH = 200   # cap per run so a huge listing cannot run up the bill
+MAX_NEW_PER_WATCH = 120   # cap per run so a huge listing cannot run up the bill
+CLASSIFY_VERSION = 2      # bump when the judging rules change: cached verdicts are re-done
 
 CATEGORIES = ["electronics", "pc", "appliances", "home", "fashion", "beauty", "diy", "toys", "sport", "books", "general"]
 
@@ -203,17 +204,21 @@ CLASSIFY_SCHEMA = {
         "properties": {"i": {"type": "integer"}, "match": {"type": "boolean"}, "year": _I, "ram_gb": _I,
                        "model": {"type": "string", "description": "canonical model id, lowercase, without colour, "
                                  "seller, part number or marketing words; same product in another colour/shop -> same string"},
+                       "unverified": {"type": "string", "description": "requirements that cannot be confirmed from the "
+                                      "title or model knowledge, as a short Russian phrase; '' if none"},
                        "why": {"type": "string"}},
-        "required": ["i", "match", "year", "ram_gb", "model", "why"], "additionalProperties": False}}},
+        "required": ["i", "match", "year", "ram_gb", "model", "unverified", "why"], "additionalProperties": False}}},
     "required": ["items"], "additionalProperties": False,
 }
 CLASSIFY_SYSTEM = (
     "You check product listings from Romanian online shops against a shopper's request. For every numbered title decide "
     "match=true only if the listing IS the requested kind of product (not an accessory, case, spare part, service or bundle "
     "of a different product) AND it satisfies every hard requirement you can verify from the title plus your knowledge of "
-    "the model (release year = first global launch year of that model/variant; RAM of that variant). Price and discount are "
-    "checked elsewhere, ignore them. year/ram_gb: your best knowledge, null if you really do not know. If a requirement "
-    "cannot be determined at all, match=false. why: max 8 words."
+    "the model (release year = first global launch year of that model/variant, inferred from generation, chip, model "
+    "code when not written; RAM of that variant). Price and discount are checked elsewhere, ignore them. A requirement "
+    "that is CONTRADICTED makes match=false. A requirement that simply cannot be confirmed from the title or your "
+    "knowledge (e.g. number of free RAM slots, exact panel supplier) does NOT make match false: set match=true and "
+    "describe it in 'unverified' so the user can check it. year/ram_gb: best knowledge, null if unknown. why: max 8 words."
 )
 
 
@@ -246,7 +251,7 @@ def _requirements(w) -> str:
 def verdicts(state, w, titles: list[str]) -> dict[str, dict]:
     """title -> {"match", "year", "ram_gb"} for the given titles (cached per watch)."""
     cache = state.data.setdefault("ai_cache", {}).setdefault(w.id, {})
-    sig = _key(_requirements(w))
+    sig = _key(_requirements(w) + f"|v{CLASSIFY_VERSION}")
     if cache.get("_sig") != sig:          # criteria changed -> judge again
         cache.clear()
         cache["_sig"] = sig
@@ -255,7 +260,8 @@ def verdicts(state, w, titles: list[str]) -> dict[str, dict]:
     for t in dict.fromkeys(titles):
         v = cache.get(_key(t))
         if v is not None:
-            out[t] = {"match": v[0], "year": v[1], "ram_gb": v[2], "model": v[4] if len(v) > 4 else None}
+            out[t] = {"match": v[0], "year": v[1], "ram_gb": v[2], "model": v[4] if len(v) > 4 else None,
+                      "unverified": v[5] if len(v) > 5 else ""}
         else:
             todo.append(t)
     if todo and enabled():
@@ -274,8 +280,10 @@ def verdicts(state, w, titles: list[str]) -> dict[str, dict]:
                 if isinstance(idx, int) and 0 <= idx < len(chunk):
                     t = chunk[idx]
                     model = (it.get("model") or "").strip().lower()[:80] or None
-                    cache[_key(t)] = [bool(it.get("match")), it.get("year"), it.get("ram_gb"), int(time.time()), model]
-                    out[t] = {"match": bool(it.get("match")), "year": it.get("year"), "ram_gb": it.get("ram_gb"), "model": model}
+                    uv = (it.get("unverified") or "").strip()[:140]
+                    cache[_key(t)] = [bool(it.get("match")), it.get("year"), it.get("ram_gb"), int(time.time()), model, uv]
+                    out[t] = {"match": bool(it.get("match")), "year": it.get("year"), "ram_gb": it.get("ram_gb"),
+                              "model": model, "unverified": uv}
     return out
 
 
@@ -295,7 +303,8 @@ GATE_SYSTEM = (
     "exclusions, price limits). Reject: accessories, spare parts, remotes, mounts, cables, cases, cleaning kits, "
     "services, warranties, bundles built around another product, wrong size/variant, refurbished/resigilat unless "
     "asked, and prices that are implausible for that product (far too low -> accessory/part/error/scam, or a fake "
-    "'old price'). If the user asked for a discount and the shop's 30-day low is shown, the deal must beat that 30-day "
+    "'old price'). Details that cannot be confirmed from the listing (not contradicted) are fine: approve. "
+    "If the user asked for a discount and the shop's 30-day low is shown, the deal must beat that 30-day "
     "low by the requested percentage (an inflated 'old price' does not count). When in doubt, reject. why: max 8 words."
 )
 

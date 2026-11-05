@@ -233,6 +233,9 @@ def format_offer_line(a: Alert, store_names: dict[str, str], n: Optional[int] = 
         notes.append("наличие неизвестно")
     if "resigilat" in o.title.lower():
         notes.append("resigilat (вскрытая упаковка)")
+    uv = getattr(a, "unverified", None)
+    if uv:
+        notes.append(f"❓ проверьте сами: {uv}")
     low30 = getattr(o, "low30", None)
     if low30 and o.old_price and low30 < o.old_price * 0.97:
         notes.append(f"мин. цена в магазине за 30 дн.: {fmt_price(low30)}" + (" — не ниже её" if o.price >= low30 else ""))

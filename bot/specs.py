@@ -172,6 +172,7 @@ gray grey gri green verde red rosu rosie pink roz purple mov violet yellow galbe
 beige cream crem lavender mint coral graphite midnight starlight titanium natural desert cosmic deep space jet onyx
 cobalt icy icyblue phantom obsidian porcelain hazel peony iris frost moonstone aloe lemongrass ultramarine teal
 mystic sky sand ocean aurora arctic charcoal ink amber jade lime plum rose sage slate stone storm sunset tidal
+glazed matte mat lucios glossy shadow light dark marble pebble titan carbon nebula lunar solar polar velvet pearl
 """.split())
 _GENERIC = set("""
 telefon mobil smartphone smart televizor tv led laptop notebook ultrabook tableta monitor 5g 4g lte dual sim esim nano
@@ -182,9 +183,13 @@ oferta pret versiune international eu ro edition editie global resigilat placa v
 _STORAGE = re.compile(r"^\d+(gb|tb)$")
 
 
+# free extras ("+ Woven Strap Ring Stand", "cadou husa") are not part of the model; "+ 2 controllere" is
+_BUNDLE = re.compile(r"\s(\+(?![^\n]*\d)|\bcu cadou\b|\bcadou\b|\bbonus\b).*$", re.I)
+
+
 def model_key(title: str) -> str:
     """Same product from different shops / in different colours -> same key (best effort without Claude)."""
-    t = norm(title or "")
+    t = norm(_BUNDLE.sub("", title or ""))
     t = re.sub(r"\b(ultra|full)\s+hd\b|\bhd\s+ready\b|\b4k\b|\b8k\b", " ", t)
     t = re.sub(r"\b\d{2,3}\s*cm\b|\b\d{2,3}\s*hz\b|\bclasa\s+[a-g]\b|\b\d{2,4}\s*-?\s*bit\b", " ", t)
     toks = []
