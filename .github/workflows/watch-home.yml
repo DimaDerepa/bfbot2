@@ -30,7 +30,8 @@ jobs:
       - name: Check Python (Windows)
         if: runner.os == 'Windows'
         shell: cmd
-        # finds a machine-wide Python even before a reboot has put it on the service's PATH
+        # 1) python on PATH  2) a machine-wide install (works before the reboot)  3) otherwise a private copy of
+        # Python for the runner in its tool cache: no admin rights, nothing installed system-wide
         run: |
           @echo off
           where python >nul 2>nul
@@ -40,10 +41,23 @@ jobs:
           )
           set "PYDIR="
           for /d %%D in ("%ProgramFiles%\Python3*") do if exist "%%~D\python.exe" set "PYDIR=%%~D"
-          if not defined PYDIR (
-            echo Python is not installed for all users. Run in an Administrator PowerShell: winget install -e --id Python.Python.3.12 --scope machine
-            exit /b 1
-          )
+          if defined PYDIR goto found
+          set "PYDIR=%RUNNER_TOOL_CACHE%\python-embed-3.12"
+          if exist "%PYDIR%\python.exe" goto pth
+          echo Downloading Python 3.12 for the runner into %PYDIR%
+          if not exist "%PYDIR%" mkdir "%PYDIR%"
+          curl.exe -fsSL -o "%RUNNER_TEMP%\py-embed.zip" https://www.python.org/ftp/python/3.12.8/python-3.12.8-embed-amd64.zip || exit /b 1
+          tar -xf "%RUNNER_TEMP%\py-embed.zip" -C "%PYDIR%" || exit /b 1
+          :pth
+          > "%PYDIR%\python312._pth" echo python312.zip
+          >> "%PYDIR%\python312._pth" echo .
+          >> "%PYDIR%\python312._pth" echo Lib\site-packages
+          >> "%PYDIR%\python312._pth" echo %GITHUB_WORKSPACE%
+          >> "%PYDIR%\python312._pth" echo import site
+          if exist "%PYDIR%\Scripts\pip.exe" goto found
+          curl.exe -fsSL -o "%PYDIR%\get-pip.py" https://bootstrap.pypa.io/get-pip.py || exit /b 1
+          "%PYDIR%\python.exe" "%PYDIR%\get-pip.py" --no-warn-script-location -q || exit /b 1
+          :found
           echo Using %PYDIR%\python.exe
           >>"%GITHUB_PATH%" echo %PYDIR%
           >>"%GITHUB_PATH%" echo %PYDIR%\Scripts
