@@ -6,7 +6,7 @@ jobs:
   probe:
     runs-on: self-hosted
     steps:
-      - shell: '"C:\actions-runner\_work\_tool\python-embed-3.12\python.exe" {0}'
+      - shell: C:\actions-runner\_work\_tool\python-embed-3.12\python.exe {0}
         run: |
           from curl_cffi import requests as r
           from bs4 import BeautifulSoup
