@@ -67,6 +67,13 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: bash scripts/save_state.sh state.json
 
+      # Home PC chain stopped (PC was off, Python was missing, ...): queue a run, it starts once the PC is back
+      - name: Restart the home runner chain
+        if: always() && vars.HOME_RUNNER == 'true' && vars.BOT_CONTINUOUS != 'false'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python -m bot.statesync kick watch-home.yml state-home.json 30 || true
+
       # Keep the bot online: every run starts the next one (GitHub's own schedule is often hours late).
       # Set the repository variable BOT_CONTINUOUS=false to stop the chain (the cron above still runs).
       - name: Start the next run

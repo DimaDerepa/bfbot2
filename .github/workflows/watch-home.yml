@@ -30,9 +30,24 @@ jobs:
       - name: Check Python (Windows)
         if: runner.os == 'Windows'
         shell: cmd
+        # finds a machine-wide Python even before a reboot has put it on the service's PATH
         run: |
-          where python || (echo Python is not installed for all users. Run in an Administrator PowerShell: winget install -e --id Python.Python.3.12 --scope machine   and restart the computer. & exit /b 1)
-          python --version
+          @echo off
+          where python >nul 2>nul
+          if not errorlevel 1 (
+            python --version
+            exit /b 0
+          )
+          set "PYDIR="
+          for /d %%D in ("%ProgramFiles%\Python3*") do if exist "%%~D\python.exe" set "PYDIR=%%~D"
+          if not defined PYDIR (
+            echo Python is not installed for all users. Run in an Administrator PowerShell: winget install -e --id Python.Python.3.12 --scope machine
+            exit /b 1
+          )
+          echo Using %PYDIR%\python.exe
+          >>"%GITHUB_PATH%" echo %PYDIR%
+          >>"%GITHUB_PATH%" echo %PYDIR%\Scripts
+          "%PYDIR%\python.exe" --version
 
       - uses: actions/checkout@v4
 

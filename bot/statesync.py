@@ -2,6 +2,8 @@
 
   python -m bot.statesync load <branch> <file>   # missing branch -> {}; any other failure -> exit 1, no file
   python -m bot.statesync save <branch> <file>   # store <file> as state.json, single orphan commit on <branch>
+  python -m bot.statesync next <workflow> [sec]   # self-hosted chain: dispatch the next run after [sec] s
+  python -m bot.statesync kick <workflow> <file> [min]   # restart a stopped chain whose state is stale
 
 Needs GITHUB_TOKEN and GITHUB_REPOSITORY (GitHub Actions provides both).
 """
@@ -148,9 +150,37 @@ def next_run(workflow: str, min_interval: int = 600) -> int:
     return 0 if r.status_code in (201, 204) else 1
 
 
+def kick(workflow: str, state_file: str, stale_minutes: int = 30) -> int:
+    """Restart a stopped self-hosted chain (PC was off, Python was missing): when its state is older than
+    `stale_minutes` and no run of it is waiting or running, dispatch one. It waits for the runner to come online."""
+    try:
+        with open(state_file, encoding="utf-8") as f:
+            last = float((json.load(f) or {}).get("last_run") or 0)
+    except (OSError, ValueError, TypeError, AttributeError):
+        last = 0.0
+    if time.time() - last < stale_minutes * 60:
+        print(f"{workflow}: fresh, nothing to do")
+        return 0
+    repo, h = _env()
+    for status in ("queued", "in_progress", "waiting", "pending", "requested"):
+        r = _req("GET", f"{API}/repos/{repo}/actions/workflows/{workflow}/runs", h,
+                 params={"status": status, "per_page": 1})
+        if r.status_code == 200 and (r.json() or {}).get("total_count"):
+            print(f"{workflow}: a run is already {status}")
+            return 0
+        if r.status_code == 404:
+            return 0     # workflow not there (fork, renamed)
+    ref = os.environ.get("GITHUB_REF_NAME") or "main"
+    r = _req("POST", f"{API}/repos/{repo}/actions/workflows/{workflow}/dispatches", h, json={"ref": ref})
+    print(f"{workflow} restarted: HTTP {r.status_code}")
+    return 0
+
+
 def main(argv: list[str]) -> int:
     if len(argv) >= 2 and argv[0] == "next":
         return next_run(argv[1], int(argv[2]) if len(argv) > 2 else 600)
+    if len(argv) >= 3 and argv[0] == "kick":
+        return kick(argv[1], argv[2], int(argv[3]) if len(argv) > 3 else 30)
     if len(argv) != 3 or argv[0] not in ("load", "save"):
         print(__doc__)
         return 2

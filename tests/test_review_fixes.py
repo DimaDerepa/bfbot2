@@ -242,3 +242,37 @@ def test_cloud_checks_home_shops_when_the_home_pc_is_silent(monkeypatch):
     monkeypatch.setenv("BOT_HOME_ENABLED", "true")
     cli._check_home_runner(st, {"last_run": int(time.time()) - 5 * 3600})
     assert len(st.data["notices"]) == 1                  # once a day
+
+
+def test_kick_restarts_a_stopped_home_chain_once(tmp_path, monkeypatch):
+    import json as _json
+
+    from bot import statesync as ss
+
+    class R:
+        def __init__(self, code, data=None):
+            self.status_code, self._d, self.text = code, data, ""
+
+        def json(self):
+            return self._d
+
+    calls = []
+    active = {"n": 0}
+
+    def fake(method, url, **k):
+        calls.append((method, url))
+        if method == "GET":
+            return R(200, {"total_count": active["n"]})
+        return R(204)
+
+    monkeypatch.setenv("GITHUB_TOKEN", "t")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "o/r")
+    monkeypatch.setattr(ss.requests, "request", fake)
+    f = tmp_path / "state-home.json"
+    f.write_text(_json.dumps({"last_run": time.time() - 60}))
+    assert ss.kick("watch-home.yml", str(f), 30) == 0 and calls == []          # fresh: nothing
+    f.write_text("{}")                                                          # never ran
+    assert ss.kick("watch-home.yml", str(f), 30) == 0 and calls[-1][0] == "POST"
+    calls.clear()
+    active["n"] = 1                                                             # one is already waiting for the PC
+    assert ss.kick("watch-home.yml", str(f), 30) == 0 and all(m == "GET" for m, _ in calls)
