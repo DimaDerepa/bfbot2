@@ -1,0 +1,27 @@
+name: probe
+on: workflow_dispatch
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -q curl_cffi beautifulsoup4
+      - shell: python {0}
+        run: |
+          from curl_cffi import requests as r
+          from bs4 import BeautifulSoup
+          s = r.Session(impersonate="chrome")
+          for u in ["https://www.compari.ro/", "https://www.compari.ro/s/?q=iphone+16", "https://www.compari.ro/CategorySearch.php?st=iphone+16",
+                    "https://www.compari.ro/search/?q=iphone+16", "https://www.compari.ro/cauta/?q=iphone+16"]:
+              try:
+                  x = s.get(u, timeout=25, allow_redirects=True)
+                  soup = BeautifulSoup(x.text, "html.parser")
+                  forms = [(f.get("action"), [i.get("name") for i in f.find_all("input")]) for f in soup.find_all("form")][:4]
+                  print(x.status_code, u, "->", x.url, len(x.text), "forms:", forms, "| title:", (soup.title.string if soup.title else "")[:80])
+                  print("   product links:", len(soup.select("a[href*='-p']")), [a.get("href") for a in soup.select("a[href*='-p']")][:3])
+              except Exception as e:
+                  print("ERR", u, e)
