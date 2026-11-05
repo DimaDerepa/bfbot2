@@ -35,13 +35,16 @@ Anti-bot: Cloudflare managed challenge (403 + cf-mitigated: challenge, "Just a m
 """
 from __future__ import annotations
 
+import logging
 import re
+import time
 from typing import Optional
 from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 
 from bs4 import BeautifulSoup, Tag
 
 from ..extract import extract_product_page
+from ..net import FetchError
 from ..models import Offer
 from .base import Store
 from ._aggregators import (
@@ -49,6 +52,7 @@ from ._aggregators import (
     raise_if_challenge, slugify, text_of,
 )
 
+log = logging.getLogger("bot.stores.compari")
 _PID_RE = re.compile(r"-p(\d{3,})(?:/|$)")
 _JUMP_RE = re.compile(r"/(?:Jump|JumpAuction)\.php|/outgoing/", re.I)
 # a.offer-num labels that are not a shop name ("Vezi oferta", "Compară prețuri", ...)
@@ -99,15 +103,32 @@ class CompariStore(NextPager, Store):
     def search_url(self, query: str) -> str:
         return f"{self.base_url}/s/?q={self.q_plus(query)}"
 
+    # /s/ answers 404 until compari moves to the Heureka search: then skip searching for a while (product-page
+    # watches keep working) instead of spending ~5 s per query and run on 404s
+    _no_search_until = 0.0
+    NO_SEARCH_PAUSE = 6 * 3600
+
     def search_page(self, query: str, page: int) -> list[Offer]:
         if page == 1:
+            if time.time() < CompariStore._no_search_until:
+                self.last_strategy = "search-unavailable"
+                return []
             self._pager_reset()
             url = self.search_url(query)
         else:
             url = self._pager_get(page)
             if not url:
                 return []
-        html, soup, final = self.get_html(url)
+        try:
+            html, soup, final = self.get_html(url)
+        except FetchError as e:
+            if page == 1 and getattr(e, "status", None) == 404 and "/s/" in url:
+                CompariStore._no_search_until = time.time() + self.NO_SEARCH_PAUSE
+                log.info("compari: search route /s/ not live yet (404); searching paused for %d h",
+                         self.NO_SEARCH_PAUSE // 3600)
+                self.last_strategy = "search-unavailable"
+                return []
+            raise
         fp = urlsplit(final)
         if fp.netloc.lower() in _HOME_HOSTS and fp.path in ("", "/"):
             # redirected to the home page: its promo carousels are not search results. (A category SUBDOMAIN root,

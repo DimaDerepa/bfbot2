@@ -244,3 +244,12 @@ def test_compari_passive_cloudflare_script_is_not_a_block():
 def test_compari_pid():
     assert compari_pid("https://mixer-dj.compari.ro/boss/gigcaster-8-gcs-8-p952304121/") == "952304121"
     assert compari_pid("https://www.compari.ro/aspiratoare-c3170/") is None
+
+
+def test_compari_search_404_pauses_searching_instead_of_failing(monkeypatch):
+    monkeypatch.setattr(CompariStore, "_no_search_until", 0.0)
+    http = FakeHttp({"compari.ro/s/": (404, "<html><title>404 Pagina nu a fost gasita</title></html>")})
+    store = make_store(CompariStore, http)
+    assert store.search("iphone 16 pro") == []
+    assert store.search("rtx 5070") == [] and len(http.calls) == 1      # the second query costs no request
+    assert store.last_strategy == "search-unavailable"
